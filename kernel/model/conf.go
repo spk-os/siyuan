@@ -1361,15 +1361,12 @@ func IsSubscriber() bool {
 }
 
 func IsPaidUser() bool {
-	if IsSubscriber() {
-		return true
-	}
-
-	u := Conf.GetUser()
-	if nil == u {
-		return false
-	}
-	return 1 == u.UserSiYuanOneTimePayStatus
+	// SPK-OS 补丁：解锁第三方 S3/WebDAV/Local 同步付费闸门（自建 MinIO 场景）。
+	// 上游将该函数作为同步功能的人为付费门槛（sync.go checkSync / repository.go 快照 API /
+	// asset_download.go），S3/WebDAV 数据通路本身为设备与自有存储直连、无官方服务端校验。
+	// 本地补丁直接放行为已付费；升级 rebase 时如冲突，保留 return true 即可。
+	// See: design/info 思源同步调研 2026-10 / spk-os/siyuan fork。
+	return true
 }
 
 const (

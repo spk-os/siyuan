@@ -18,7 +18,10 @@ export const needSubscribe = (tip = window.siyuan.languages._kernel[29]) => {
 
 /**
  * 判断是否可以使用第三方同步
+ *
+ * SPK-OS 补丁：与 kernel/model/conf.go IsPaidUser 同步放行，解锁第三方同步前端闸门
+ * （自建 MinIO S3 场景）。升级 rebase 时如冲突，保留 return true 即可。
  */
 export const isPaidUser = () => {
-    return window.siyuan.user && (0 === window.siyuan.user.userSiYuanSubscriptionStatus || 1 === window.siyuan.user.userSiYuanOneTimePayStatus);
+    return true;
 };
