@@ -475,7 +475,7 @@ func checkSync(boot, exit, byHand bool) bool {
 	// 上游要求 GetUser() != nil，但 buildCloudConf 中 user 仅在 ProviderSiYuan 时使用
 	// （S3 模式下 userId/token 走默认值，不依赖登录态）；Docker 服务器端无 UI 登录入口。
 	// 官方云端仍保留 IsSubscriber 强制校验，不受本补丁影响。
-	if nil == Conf.GetUser() && conf.ProviderSiYuan == Conf.Sync.Provider {
+	if nil == Conf.GetUser() && conf.ProviderSiYuan == confSyncReadSnapshot.Provider {
 		return false
 	}
 
