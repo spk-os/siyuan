@@ -80,7 +80,7 @@ const fixture = (initialStorage: Record<string, unknown> = {}, workspaceID = "")
             }};
             return dialogHandle;
         },
-        confirmDialog: (_title: string, _message: string, confirm: () => void) => confirm(),
+        confirmDialog: ({confirm}: {confirm: () => void}) => confirm(),
         showMessage: (message: string) => messages.push(message),
         escapeHtml: (text: string) => text,
         openNewWindowByWorkspace: (workspace: string, geometry?: IWindowGeometry) => {
@@ -131,6 +131,32 @@ const fixture = (initialStorage: Record<string, unknown> = {}, workspaceID = "")
 const savedStorage = () => ({
     [prefix + id]: {version: 1, id, name: "Reading"},
     [prefix + id + "-layout"]: {version: 1, time: 1, layout: layout()},
+});
+
+test("窗口布局按钮在布局就绪后才调整标签页位置", () => {
+    let positions = 0;
+    const button = {dataset: {}, setAttribute() {}, toggleAttribute() {}, classList: {toggle() {}}, addEventListener() {}};
+    const api = {} as typeof import("./workspace");
+    const dependencies = {
+        ...core,
+        Constants: {LOCAL_WINDOW_WORKSPACE: prefix},
+        isWindow: () => true,
+        applyWindowTopBarEntryVisibility() {},
+        setWindowWorkspaceTitle() {},
+        setTabPosition: () => { positions++; },
+    };
+    runInNewContext(compiled, {
+        exports: api,
+        require: () => dependencies,
+        window: {siyuan: {config: {readonly: false}, languages: {windowWorkspaceSave: "Save layout"}},
+            addEventListener() {}, setInterval() {}},
+        document: {getElementById: () => button, createElement: () => button,
+            querySelector: () => ({insertBefore() {}}), addEventListener() {}},
+    });
+    api.initWindowWorkspace();
+    assert.equal(positions, 0);
+    api.activateWindowWorkspace();
+    assert.equal(positions, 1);
 });
 
 test("重复点击布局按钮关闭命名弹窗，取消后可以重新打开", () => {

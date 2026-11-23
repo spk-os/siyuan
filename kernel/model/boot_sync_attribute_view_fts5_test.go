@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //go:build fts5
 
 package model
@@ -52,7 +56,7 @@ func TestBootSyncAttributeViewIndex(t *testing.T) {
 	tree.Root.AppendChild(&ast.Node{Type: ast.NodeAttributeView, ID: "20260909170002-db00001", AttributeViewID: avID})
 	writeAssetDownloadDocumentTest(t, tree)
 
-	// 启动同步标志只能在后处理返回后清除；超时解除等待，使回归失败能够正常报告。
+	// 预取期间的索引处理不能等待自身的存储标志；超时解除等待，使回归失败能够正常报告。
 	originalBootSyncing := isBootSyncing.Swap(true)
 	var timedOut atomic.Bool
 	watchdogDone := make(chan struct{})
@@ -73,7 +77,7 @@ func TestBootSyncAttributeViewIndex(t *testing.T) {
 	processSyncMergeResult(false, false, &dejavu.MergeResult{Upserts: []*entity.File{
 		{Path: "/" + tree.Box + tree.Path},
 		{Path: "/storage/av/" + avID + ".json"},
-	}}, &dejavu.TrafficStat{}, "a", 0, true)
+	}}, &dejavu.TrafficStat{}, "a", 0, true, nil)
 	// 数据库定义变更追加的引用索引也必须在启动同步期间完成。
 	sql.FlushQueue()
 	stopWatchdog()

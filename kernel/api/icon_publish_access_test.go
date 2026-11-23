@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package api
 
@@ -75,9 +63,9 @@ func TestGetDynamicIconEnforcesPublishAccess(t *testing.T) {
 	}
 
 	model.Conf = model.NewAppConf()
-	model.Conf.Sync = conf.NewSync()
+	model.Conf.Sync.Store(conf.NewSync())
 	model.Conf.Lang = "en"
-	model.Conf.Editor = conf.NewEditor()
+	model.Conf.Editor.Store(conf.NewEditor())
 
 	boxConf := conf.NewBoxConf()
 	boxConf.Name = "Dynamic icon publish access"
@@ -180,7 +168,7 @@ func TestGetDynamicIconEnforcesPublishAccess(t *testing.T) {
 	// 通过发布密码认证的读者必须仍能渲染
 	authCookie := &http.Cookie{
 		Name:  "publish-auth-" + passwordID,
-		Value: util.SHA256Hash([]byte(passwordID + password)),
+		Value: model.PublishAuthCookieValue(passwordID, password),
 	}
 	if svg := requestIcon(model.RoleReader, passwordID, titleContent, authCookie); !strings.Contains(svg, "Password Doc") {
 		t.Fatalf("authenticated publish reader cannot render the template icon: %s", svg)

@@ -5,11 +5,25 @@ import {tmpdir} from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import {promisify} from "node:util";
-import {ScriptTarget, transpileModule} from "typescript";
+import {createSourceFile, isArrowFunction, isBlock, isVariableStatement, ScriptTarget, transpileModule} from "typescript";
 
-const browserCases = async (sourceCode: string, css: string) => {
+const browserCases = async (sourceCode: string, css: string, cleanupSource: string, tabsSource: string,
+                            tableSource: string, cellCommitSource: string, tableSnapshots: boolean, imageSnapshots: boolean) => {
     const check = require("node:assert/strict");
+    const lute = Lute.New();
+    lute.SetProtyleWYSIWYG(true);
+    lute.SetKramdownIAL(true);
+    const table = new Function("Constants", "highlightRender", "mathRender", tableSource +
+        "; return {cleanTableCellRichHTML, encodeTableCellRich, decodeTableCellRich, getTableCellRichBlockDOM, " +
+        "serializeTableCellRich, getTableCellInlineHTML, updateTableCellEditingValue, getTableBlockHTML};")(
+        {CUSTOM_SY_TABLE_RICH: "custom-sy-table-rich", ZWSP: "\u200b"}, () => {}, () => {}) as typeof import("../../util/tableCellRich") &
+        typeof import("../../util/tableCellRichValue");
+    const {tabsRender, destroyTabsRender} = new Function(tabsSource + "; return {tabsRender, destroyTabsRender};")();
+    const baseStyle = document.createElement("style");
+    baseStyle.textContent = css;
+    document.head.append(baseStyle);
     const noop = (): void => undefined;
+    let mobile = false;
     const settle = async () => {
         await new Promise<void>(resolve => setTimeout(resolve, 0));
     };
@@ -36,12 +50,18 @@ const browserCases = async (sourceCode: string, css: string) => {
         block.textContent = text;
         return block.outerHTML;
     };
-    const create = (initialBlockHTML = textHTML("Initial"), replaceFirstParagraph?: string) => {
+    const create = (initialBlockHTML = textHTML("Initial"), replaceFirstParagraph?: string,
+                    branchType = "NodeList", embedded = false, canvas = false) => {
         let transactionOwner: (operations: Array<{action: string; id: string; parentID?: string;
             previousID?: string; nextID?: string}>) => unknown;
         const container = document.createElement("section");
+        container.dataset.type = branchType;
+        const rootID = embedded ? "source-document" : "document";
+        if (embedded) {
+            container.classList.add("protyle-wysiwyg__embed");
+        }
         const element = document.createElement("div");
-        element.dataset.type = "NodeListItem";
+        element.dataset.type = `${branchType}Item`;
         element.dataset.nodeId = "item";
         element.innerHTML = initialBlockHTML;
         const host = document.createElement("div");
@@ -49,31 +69,53 @@ const browserCases = async (sourceCode: string, css: string) => {
         host.style.width = "120px";
         host.style.minWidth = "36px";
         const wysiwyg = document.createElement("div");
+        wysiwyg.className = "protyle-wysiwyg";
         const hintElement = document.createElement("div");
         const toolbarElement = document.createElement("div");
         const subElement = document.createElement("div");
+        const tableControl = document.createElement("div");
+        tableControl.className = "protyle-table-control";
+        tableControl.innerHTML = '<button class="protyle-table-control__handle protyle-table-control__handle--cell fn__none" type="button"></button>';
         [hintElement, toolbarElement, subElement].forEach(item => item.classList.add("fn__none"));
         container.append(element, host, hintElement, toolbarElement, subElement);
+        if (canvas) {
+            const map = document.createElement("div");
+            map.className = "mindmap-view";
+            map.innerHTML = '<div class="mindmap-view__viewport"><div class="mindmap-view__world">' +
+                '<div class="mindmap-view__node mindmap-view__node--editing"></div></div></div>';
+            map.querySelector(".mindmap-view__node").append(host);
+            host.classList.add("mindmap-view__content");
+            hintElement.classList.add("protyle-hint", "protyle-hint--lite-overlay");
+            toolbarElement.classList.add("protyle-toolbar");
+            subElement.classList.add("protyle-util");
+            container.append(map);
+        }
         document.body.append(container);
         const state = {
+            focusedText: "",
+            panTarget: undefined as Element | undefined,
             flushed: 0,
             destroyed: 0,
             finished: 0,
             saves: [] as string[],
             additions: [] as string[],
+            listInputs: [] as import("./listInput").ListMindmapListInput[],
             messages: [] as string[],
             accept: true,
             flush: async (): Promise<void> => undefined,
             saveBarrier: undefined as Promise<void> | undefined,
+            finishNested: async (): Promise<boolean> => true,
+            uploads: [] as File[][],
         };
         const protyle = {
             block: {rootID: ""},
+            upload: {isUploading: false},
             undo: {clear: noop},
             wysiwyg: {lastHTMLs: {} as Record<string, string>, flushPendingInput: async () => {
                 state.flushed++;
                 await state.flush();
             }},
-            toolbar: {element: toolbarElement, subElement},
+            toolbar: {element: toolbarElement, subElement, range: undefined as Range | undefined},
         };
         const dependencies = {
             genEmptyElement: () => {
@@ -89,35 +131,54 @@ const browserCases = async (sourceCode: string, css: string) => {
                 node.textContent = value;
                 return node.innerHTML;
             },
-            isMobile: () => false,
+            isMobile: () => mobile,
             hintRef: (): unknown[] => [],
             hintSlash: (): unknown[] => [],
+            hintTag: (): unknown[] => [],
             registerBuiltinSlashHint: (callback: unknown) => callback,
             mountProtyleLiteFragment: (target: HTMLElement, options: {
                 initialBlockHTML: string;
                 onChange: () => void;
                 afterSetContent: (owner: unknown, element: HTMLElement) => void;
                 runtimeCapabilities: {getTransactionOwner: typeof transactionOwner};
+                protyleOptions: {hint: {extend: Array<{key: string; hint: unknown}>}};
             }) => {
+                const hints = options.protyleOptions.hint.extend;
+                check.equal(hints.find(item => item.key === "#")?.hint, dependencies.hintTag,
+                    "mindmap nodes use the built-in tag creation and search hint");
+                check.ok(hints.findIndex(item => item.key === "#") < hints.findIndex(item => item.key === "/"),
+                    "tag searches containing a slash retain tag hint precedence");
                 transactionOwner = options.runtimeCapabilities.getTransactionOwner;
                 target.style.width = "";
                 wysiwyg.innerHTML = options.initialBlockHTML;
-                target.append(wysiwyg);
+                target.append(wysiwyg, tableControl);
                 options.afterSetContent(protyle, wysiwyg);
                 const observer = new MutationObserver(options.onChange);
                 observer.observe(wysiwyg, {subtree: true, childList: true, characterData: true});
                 return {
                     protyle, wysiwyg, hintElement,
-                    focus: noop,
+                    focus: () => {
+                        const target = Array.from(wysiwyg.querySelectorAll<HTMLElement>('[contenteditable="true"]'))
+                            .reverse().find(item => item.getBoundingClientRect().width > 0);
+                        state.focusedText = target?.textContent || "";
+                    },
                     getBlockHTML: () => wysiwyg.innerHTML,
-                    getMarkdown: () => wysiwyg.textContent,
+                    getMarkdown: () => imageSnapshots ? lute.BlockDOM2StdMd(wysiwyg.innerHTML).trim() : wysiwyg.textContent,
                     destroy: () => {
+                        destroyTabsRender(wysiwyg);
                         observer.disconnect();
                         state.destroyed++;
                     },
                 };
             },
             bindLiteCodeActions: noop,
+            paste: (target: typeof protyle, data: {files?: File[], target: HTMLElement}) => {
+                check.equal(target, protyle);
+                check.equal(data.target, wysiwyg);
+                check.equal(target.block.rootID, rootID);
+                check.equal(target.toolbar.range, undefined);
+                state.uploads.push(data.files);
+            },
             setMobileToolbarUndo: noop,
             getDefaultToolbar: (): unknown[] => [],
             hideElements: noop,
@@ -142,21 +203,29 @@ const browserCases = async (sourceCode: string, css: string) => {
                     event.altKey === binding.includes("⌥");
             },
             processRender: noop,
+            initEditorTabs: () => tabsRender(wysiwyg, {readonly: () => false}),
             setCustomBlockRootReady: noop,
             avRender: noop,
             blockRender: noop,
             highlightRender: noop,
-            cleanListMindmapHTML: (html: string) => html,
+            getUndoFocusContext: (): undefined => undefined,
+            restoreFocusContext: () => false,
+            finishListMindmaps: () => state.finishNested(),
+            cleanListMindmapHTML: new Function(cleanupSource + "; return cleanListMindmapHTML;")(),
+            cleanTableCellRichHTML: table.cleanTableCellRichHTML,
         };
         const open = new Function(...Object.keys(dependencies), sourceCode + "; return openListMindmapEditor;")(
             ...Object.values(dependencies));
         const owner = {app: {}, notebookId: "notebook", block: {rootID: "document"}};
         const editor = open({
             owner,
+            rootID,
             node: {element}, host, replaceFirstParagraph,
             canEdit: () => element.isConnected,
             onResize: noop,
             onAdd: async (kind: string) => { state.additions.push(kind); },
+            onListInput: async (input: import("./listInput").ListMindmapListInput) => { state.listInputs.push(input); },
+            isPanTarget: (event: PointerEvent) => event.target === state.panTarget,
             onFinish: () => state.finished++,
             onUndo: noop,
             onSave: async (html: string) => {
@@ -170,7 +239,7 @@ const browserCases = async (sourceCode: string, css: string) => {
             },
         });
         check.ok(editor);
-        check.equal(protyle.block.rootID, "document");
+        check.equal(protyle.block.rootID, rootID);
         const type = async (value: string) => {
             wysiwyg.innerHTML = textHTML(value);
             await settle();
@@ -180,12 +249,12 @@ const browserCases = async (sourceCode: string, css: string) => {
             await until(() => state.destroyed === 1);
             container.remove();
         };
-        return {container, element, host, wysiwyg, hintElement, protyle, state, editor, type, remove,
+        return {container, element, host, wysiwyg, hintElement, tableControl, protyle, state, editor, type, remove,
             owner, transactionOwner: (operations: Parameters<typeof transactionOwner>[0]) => transactionOwner(operations)};
     };
     window.siyuan = {
         languages: {listMindmapStale: "Content changed", listMindmapUnsupported: "Unsupported"},
-        config: {keymap: {editor: {
+        config: {editor: {markdown: {codeBlockMiddleDot: true}}, keymap: {editor: {
             general: {
                 undo: "undo", redo: "redo",
                 insertBefore: {default: "⇧⌘B", custom: "⇧⌘B"},
@@ -198,9 +267,462 @@ const browserCases = async (sourceCode: string, css: string) => {
         }}},
     } as unknown as typeof window.siyuan;
 
+    if (imageSnapshots) {
+        for (const resized of [false, true]) {
+            const current = create('<div data-node-id="image-body" data-type="NodeParagraph"><span data-type="img" class="img">' +
+                '<span class="protyle-image-container" style="width: 180px;"><img src="assets/image.png" alt="description"></span></span></div>');
+            const image = current.wysiwyg.querySelector("img");
+            image.closest(".img").classList.add("img--select", "img--drag");
+            image.parentElement.classList.add("protyle-image-container--compact");
+            image.parentElement.insertAdjacentHTML("beforeend", '<span class="protyle-image-resize"><span class="touch-resize-active"></span></span>');
+            if (resized) {
+                image.parentElement.style.width = "140px";
+            }
+            check.equal(await current.editor.finish(), true);
+            check.equal(current.state.saves.length, resized ? 1 : 0, "image UI changes alone do not create a content save");
+            check.equal(current.element.querySelector(".img--select, .img--drag, .protyle-image-resize, .protyle-image-container--compact"), null);
+            check.equal(current.element.querySelector("img").parentElement.style.width, resized ? "140px" : "180px");
+            await current.remove();
+        }
+        const imageHTML = (caption: string) => {
+            const source = document.createElement("div");
+            source.innerHTML = lute.Md2BlockDOM(`Before ![description](assets/image.png "${caption}") After`);
+            const image = source.querySelector("img");
+            image.parentElement.classList.add("protyle-image-container");
+            image.parentElement.style.width = "280px";
+            const after = document.createElement("span");
+            after.className = "image-after";
+            after.textContent = "After";
+            source.querySelector('[contenteditable="true"]').lastChild.replaceWith(after);
+            return source.innerHTML;
+        };
+        const setImageFontSize = (root: HTMLElement, size: string) => {
+            root.querySelectorAll<HTMLElement>(".img__name, .protyle-action__title, .img__alt")
+                .forEach(caption => caption.style.setProperty("--protyle-image-font-size", size));
+        };
+        for (const caption of ["", "Caption"]) {
+            for (const resized of [false, true]) {
+                const current = create(imageHTML(caption));
+                setImageFontSize(current.element, "8px");
+                setImageFontSize(current.wysiwyg, "28px");
+                if (resized) {
+                    current.wysiwyg.querySelector<HTMLElement>(".protyle-image-container").style.width = "90px";
+                }
+                check.equal(await current.editor.finish(), true);
+                check.equal(current.state.saves.length, resized ? 1 : 0,
+                    "different visible and hidden caption sizes must not create a save or block resizing");
+                check.equal(current.state.messages.length, 0);
+                check.equal(current.element.querySelector<HTMLElement>(".protyle-image-container").style.width,
+                    resized ? "90px" : "280px");
+                check.equal(current.element.querySelector(".protyle-action__title").textContent, caption);
+                await current.remove();
+            }
+            const current = create(imageHTML(caption));
+            setImageFontSize(current.wysiwyg, "28px");
+            current.wysiwyg.querySelector(".image-after").textContent = "First edit";
+            window.dispatchEvent(new Event("blur"));
+            await until(() => current.state.saves.length === 1);
+            setImageFontSize(current.element, "8px");
+            setImageFontSize(current.wysiwyg, "9px");
+            current.wysiwyg.querySelector<HTMLElement>(".protyle-image-container").style.width = "90px";
+            current.wysiwyg.querySelector(".image-after").textContent = "Second edit";
+            check.equal(await current.editor.finish(), true, "layout changes after a save cannot reject the following save");
+            check.equal(current.state.saves.length, 2);
+            check.equal(current.state.messages.length, 0);
+            check.equal(current.element.querySelector(".image-after").textContent, "Second edit");
+            check.equal(current.element.querySelector<HTMLElement>(".protyle-image-container").style.width, "90px");
+            check.ok(current.state.saves.every(html => !html.includes("--protyle-image-font-size")));
+            await current.remove();
+        }
+        for (const change of ["width", "text", "caption", "style"]) {
+            const current = create(imageHTML("Caption"));
+            setImageFontSize(current.element, "8px");
+            setImageFontSize(current.wysiwyg, "28px");
+            if (change === "width") {
+                current.element.querySelector<HTMLElement>(".protyle-image-container").style.width = "180px";
+            } else if (change === "text") {
+                current.element.querySelector(".image-after").textContent = "External text";
+            } else if (change === "caption") {
+                current.element.querySelector(".protyle-action__title span").textContent = "External caption";
+            } else {
+                current.element.querySelector<HTMLElement>(".protyle-action__title").style.color = "red";
+            }
+            const source = current.element.innerHTML;
+            current.wysiwyg.querySelector(".image-after").textContent = "Unsaved local text";
+            check.equal(await current.editor.finish(), false, `external ${change} changes must still reject stale saves`);
+            check.equal(current.state.saves.length, 0);
+            check.equal(current.element.innerHTML, source);
+            check.equal(current.state.messages.length, 1);
+            const recovery = document.createElement("div");
+            recovery.innerHTML = current.state.messages[0];
+            const recoveredMarkdown = recovery.querySelector("pre").textContent;
+            check.ok(recoveredMarkdown.includes("Unsaved local text"), "recovery preserves rejected local content");
+            check.ok(recoveredMarkdown.includes('![description](assets/image.png "Caption")'),
+                "recovery preserves the image path, alt text and caption through the real Markdown conversion");
+            await current.remove();
+        }
+        return "List mindmap image snapshot cases passed";
+    }
+
+    // 单元格编辑器的工具栏和搜索样式只属于运行时，节点快照始终读取单元格源内容。
+    for (const rich of tableSnapshots ? [false, true] : []) {
+        const initial = '<div data-type="NodeTable" data-node-id="20261104070743-07ezu7a"><div contenteditable="true">' +
+            "<table><thead><tr><th>Header</th></tr></thead><tbody><tr><td" +
+            (rich ? ` data-sy-table-cell-rich="${table.encodeTableCellRich("Initial")}"` : "") +
+            ">Initial</td></tr></tbody></table></div></div>";
+        let previous = initial;
+        for (let round = 0; round < 2; round++) {
+            const current = create(previous, undefined, "NodeMindmap");
+            const cell = current.wysiwyg.querySelector("td");
+            const value = `Saved ${round}`;
+            const attribute = rich ? "data-sy-table-cell-rich" : "data-sy-table-cell-inline";
+            cell.setAttribute(attribute, rich ? table.encodeTableCellRich(value) : value);
+            cell.innerHTML = '<div class="table__cell-editor"><div class="protyle-wysiwyg">' +
+                textHTML(value) + '</div><div class="protyle-toolbar">Toolbar labels</div>' +
+                "<style>.protyle-content::highlight(search-mark-test) {color: red;}</style></div>";
+            const mounted = cell.innerHTML;
+            const restored = create(current.wysiwyg.innerHTML, undefined, "NodeMindmap");
+            check.doesNotMatch(restored.wysiwyg.innerHTML, /table__cell-editor|Toolbar labels|::highlight/,
+                "opening a source snapshot restores saved cells before mounting the editor");
+            check.equal(await restored.editor.finish(), true);
+            check.equal(restored.state.saves.length, 0);
+            await restored.remove();
+            await until(() => current.state.saves.length > 0);
+            check.doesNotMatch(current.state.saves[0], /table__cell-editor|Toolbar labels|::highlight/,
+                "autosave must not copy a live cell editor into the mindmap source");
+            check.equal(cell.innerHTML, mounted, "snapshot cleanup leaves the live editor mounted");
+            check.equal(await current.editor.finish(), true);
+            check.equal(current.state.saves.length, 1, "finishing uses the same normalized snapshot");
+            previous = current.element.innerHTML;
+            const replay = document.createElement("div");
+            replay.innerHTML = lute.SpinBlockDOM(previous);
+            check.doesNotMatch(replay.textContent, /Toolbar labels|::highlight/);
+            if (rich) {
+                check.equal(table.decodeTableCellRich(replay.querySelector("td")
+                    .getAttribute("data-sy-table-cell-rich")).content, value);
+            } else {
+                check.equal(replay.querySelector("td").textContent, value);
+            }
+            const reopened = create(previous, undefined, "NodeMindmap");
+            check.equal(await reopened.editor.finish(), true);
+            check.equal(reopened.state.saves.length, 0, "reopening unchanged cells creates no save");
+            await reopened.remove();
+            await current.remove();
+        }
+    }
+    if (tableSnapshots) {
+        for (const rich of [false, true]) {
+            for (const composing of [false, true]) {
+                const current = create(lute.Md2BlockDOM("| Header |\n| --- |\n| Initial |"), undefined, "NodeMindmap");
+                const cell = current.wysiwyg.querySelector("td");
+                if (rich) {
+                    cell.setAttribute("data-sy-table-cell-rich", table.encodeTableCellRich("Initial\n\nContent"));
+                }
+                const initialBlockHTML = table.getTableCellRichBlockDOM(cell);
+                if (!rich) {
+                    cell.setAttribute("data-sy-table-cell-inline", cell.innerHTML);
+                }
+                cell.innerHTML = '<div class="table__cell-editor"><div class="protyle-wysiwyg">' +
+                    initialBlockHTML + '</div><div class="protyle-toolbar">Toolbar labels</div>' +
+                    "<style>.protyle-content::highlight(search-mark-test) {color: red;}</style></div>";
+                const host = cell.firstElementChild;
+                const wysiwyg = host.querySelector<HTMLElement>(".protyle-wysiwyg");
+                const dependencies = {...table, cell, host, initialBlockHTML,
+                    table: cell.closest('[data-type="NodeTable"]'), owner: {disabled: false, wysiwyg: {element: current.wysiwyg}},
+                    fragment: {wysiwyg, getBlockHTML: () => wysiwyg.innerHTML},
+                    captureRichCellSelection: (): undefined => undefined, getUndoFocusContext: () => ({}),
+                    getTableVirtualCellIndex: () => 0, restoreTableVirtualizationDOM: noop, updateTransaction: noop,
+                    showMessage: () => check.fail("Cell serialization failed"),
+                };
+                const cellEditor = new Function(...Object.keys(dependencies),
+                    "let source, contentChanged = false, undoSelection, composing = false; " +
+                    "let savedBlockHTML = fragment.getBlockHTML(); " +
+                    "const getSource = () => source ??= serializeTableCellRich(initialBlockHTML).markdown; " +
+                    cellCommitSource + "; return {commit, setComposing: value => { composing = value; }};")(
+                    ...Object.values(dependencies));
+                const observer = new MutationObserver(() => cellEditor.commit());
+                observer.observe(wysiwyg, {childList: true, characterData: true, subtree: true});
+                host.addEventListener("compositionstart", event => {
+                    cellEditor.setComposing(true);
+                    event.stopPropagation();
+                });
+                host.addEventListener("compositionend", event => {
+                    queueMicrotask(() => { cellEditor.setComposing(false); cellEditor.commit(); });
+                    event.stopPropagation();
+                });
+                const editable = wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+                if (composing) {
+                    editable.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
+                }
+                editable.textContent = "Pending cell input";
+                const finishing = current.editor.finish();
+                if (composing) {
+                    check.equal(await finishing, false, "outer capture protects composition inside the nested editor");
+                    check.equal(current.state.destroyed, 0);
+                    editable.dispatchEvent(new CompositionEvent("compositionend", {bubbles: true}));
+                    await until(() => current.state.finished === 1);
+                } else {
+                    check.equal(await finishing, true);
+                }
+                check.ok(current.state.saves.length > 0);
+                const saved = current.state.saves[current.state.saves.length - 1];
+                check.doesNotMatch(saved, /table__cell-editor|Toolbar labels|::highlight/);
+                const replay = document.createElement("div");
+                replay.innerHTML = lute.SpinBlockDOM(saved);
+                check.match(table.getTableCellRichBlockDOM(replay.querySelector("td")), /Pending cell input/,
+                    "the real cell commit reaches the parent snapshot before teardown");
+                observer.disconnect();
+                await current.remove();
+            }
+        }
+        return "List mindmap table snapshot cases passed";
+    }
+
+    mobile = true;
+    const documentHistoryEditor = create();
+    const documentBar = document.createElement("div");
+    documentBar.className = "protyle-breadcrumb";
+    const moreButton = document.createElement("button");
+    moreButton.dataset.type = "more";
+    documentBar.append(moreButton); document.body.append(documentBar);
+    moreButton.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true}));
+    await settle();
+    check.equal(documentHistoryEditor.state.finished, 0,
+        "opening More preserves the node editor until the document history save gate runs");
+    const documentHistory = document.createElement("div");
+    documentHistory.id = "commonMenu";
+    const undoButton = document.createElement("button");
+    documentHistory.append(undoButton); document.body.append(documentHistory);
+    undoButton.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true}));
+    await settle();
+    check.equal(documentHistoryEditor.state.finished, 0,
+        "document history controls preserve the node editor until the explicit save gate runs");
+    check.equal(await documentHistoryEditor.editor.finish(), true);
+    check.equal(documentHistoryEditor.state.finished, 1);
+    documentBar.remove(); documentHistory.remove(); await documentHistoryEditor.remove();
+    mobile = false;
+
+    // 普通段落与软键盘回车走同一节点拆分路径；保留富文本、后续块和原生编辑边界。
+    const listParagraph = '<div data-type="NodeParagraph" data-node-id="paragraph"><div contenteditable="true"><span data-type="strong">AlphaBeta</span></div></div>';
+    for (const softKeyboard of [false, true]) {
+        const current = create(listParagraph + '<div data-type="NodeParagraph" data-node-id="second"><div contenteditable="true">Second</div></div>');
+        const editable = current.wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+        const range = document.createRange();
+        range.setStart(editable.firstChild.firstChild, 5);
+        range.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        const event = softKeyboard ? new InputEvent("beforeinput", {inputType: "insertParagraph", bubbles: true, cancelable: true}) :
+            new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true});
+        editable.dispatchEvent(event);
+        check.equal(event.defaultPrevented, true);
+        check.equal(current.state.listInputs.length, 1);
+        check.equal(current.state.listInputs[0].kind, "split");
+        check.match(current.state.listInputs[0].before, /<span data-type="strong">Alpha<\/span>/);
+        check.match(current.state.listInputs[0].after, /<span data-type="strong">Beta<\/span>/);
+        check.match(current.state.listInputs[0].after, /data-node-id="second"/);
+        check.equal(editable.textContent, "AlphaBeta", "planning does not mutate unsaved text");
+        await current.remove();
+    }
+    for (const [key, shift, offset, expected] of [
+        ["Enter", false, 0, "before"], ["Enter", false, 9, "split"],
+        ["Tab", false, 3, "indent"], ["Tab", true, 3, "outdent"],
+        ["Backspace", false, 0, "mergePrevious"], ["Delete", false, 9, "mergeNext"],
+        ["Enter", true, 5, undefined], ["Backspace", false, 5, undefined], ["Delete", true, 9, undefined],
+    ] as const) {
+        const current = create(listParagraph);
+        const editable = current.wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+        const range = document.createRange();
+        range.setStart(editable.firstChild.firstChild, offset);
+        range.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        const event = new KeyboardEvent("keydown", {key, shiftKey: shift, bubbles: true, cancelable: true});
+        editable.dispatchEvent(event);
+        check.equal(current.state.listInputs[0]?.kind, expected, `${key} shift=${shift} offset=${offset}`);
+        check.equal(event.defaultPrevented, !!expected);
+        await current.remove();
+    }
+    for (const boundary of ["code-block", "table", "av", "protyle-wysiwyg__embed", "hint", "composition"]) {
+        const current = create(listParagraph);
+        const editable = current.wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+        const range = document.createRange();
+        range.selectNodeContents(editable);
+        range.collapse(false);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        if (boundary === "hint") current.hintElement.classList.remove("fn__none");
+        else if (boundary !== "composition") editable.classList.add(boundary);
+        const event = new KeyboardEvent("keydown", {key: "Enter", isComposing: boundary === "composition", bubbles: true, cancelable: true});
+        editable.dispatchEvent(event);
+        check.equal(event.defaultPrevented, false, boundary);
+        check.equal(current.state.listInputs.length, 0, boundary);
+        await current.remove();
+    }
+    for (const [inputType, offset, expected] of [
+        ["deleteContentBackward", 0, "mergePrevious"], ["deleteContentForward", 9, "mergeNext"],
+    ] as const) {
+        const current = create(listParagraph);
+        const editable = current.wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+        const range = document.createRange();
+        range.setStart(editable.firstChild.firstChild, offset);
+        range.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        editable.dispatchEvent(new InputEvent("beforeinput", {inputType, bubbles: true, cancelable: true}));
+        check.equal(current.state.listInputs[0].kind, expected);
+        await current.remove();
+    }
+    const customized = create(listParagraph);
+    const originalChildShortcut = window.siyuan.config.keymap.editor.list.mindmapAddChild.custom;
+    window.siyuan.config.keymap.editor.list.mindmapAddChild.custom = "↩";
+    const customizedEditable = customized.wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+    const customizedRange = document.createRange();
+    customizedRange.selectNodeContents(customizedEditable);
+    customizedRange.collapse(false);
+    getSelection().removeAllRanges();
+    getSelection().addRange(customizedRange);
+    customizedEditable.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+    await until(() => customized.state.additions.length === 1);
+    check.deepEqual(customized.state.additions, ["child"], "a configured plain Enter shortcut takes precedence over node splitting");
+    check.equal(customized.state.listInputs.length, 0);
+    window.siyuan.config.keymap.editor.list.mindmapAddChild.custom = originalChildShortcut;
+    await customized.remove();
+    for (const marker of ["```js", "~~~go", "···"]) {
+        const current = create('<div data-type="NodeParagraph" data-node-id="paragraph"><div contenteditable="true"></div></div>');
+        const editable = current.wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+        editable.textContent = marker;
+        const range = document.createRange();
+        range.selectNodeContents(editable);
+        range.collapse(false);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        const event = new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true});
+        editable.dispatchEvent(event);
+        check.equal(event.defaultPrevented, false, "code fences reach the existing Markdown conversion");
+        check.equal(current.state.listInputs.length, 0);
+        await current.remove();
+    }
+
+    // 节点编辑器透传未处理的组合快捷键，已消费的编辑操作和组合输入仍保持隔离。
+    const shortcutEditor = create();
+    const received: KeyboardEvent[] = [];
+    shortcutEditor.container.addEventListener("keydown", event => received.push(event));
+    for (const key of ["p", "f", "e"]) {
+        for (const modifiers of [{ctrlKey: true}, {metaKey: true}]) {
+            const event = new KeyboardEvent("keydown", {key, ...modifiers, bubbles: true, cancelable: true});
+            shortcutEditor.wysiwyg.dispatchEvent(event);
+            check.equal(received[received.length - 1], event);
+        }
+    }
+    const beforeHandled = received.length;
+    for (const init of [{key: "x"}, {key: "p", ctrlKey: true, isComposing: true}]) {
+        shortcutEditor.wysiwyg.dispatchEvent(new KeyboardEvent("keydown", {...init, bubbles: true}));
+    }
+    const consumed = new KeyboardEvent("keydown", {key: "p", ctrlKey: true, bubbles: true, cancelable: true});
+    consumed.preventDefault();
+    shortcutEditor.wysiwyg.dispatchEvent(consumed);
+    check.equal(received.length, beforeHandled);
+    await shortcutEditor.remove();
+
     // 直接键入只替换首个段落，保留其余内容块。
     const paragraph = (id: string, html: string) =>
         `<div data-type="NodeParagraph" data-node-id="${id}" class="p"><div contenteditable="true">${html}</div></div>`;
+    // 新增的直接子分支在关闭节点编辑时提交，自动保存不能先把分支 ID 写入源树。
+    for (const type of ["NodeList", "NodeMindmap"]) {
+        const current = create(paragraph("body", "Keep body"), undefined, "NodeMindmap");
+        const branch = document.createElement("div");
+        branch.dataset.type = type;
+        branch.dataset.nodeId = "new-branch";
+        branch.innerHTML = `<div data-node-id="new-item" data-type="${type}Item">${paragraph("child", "New child")}</div>`;
+        current.wysiwyg.append(branch);
+        await settle();
+        const flushed = current.state.flushed;
+        window.dispatchEvent(new Event("blur"));
+        await until(() => current.state.flushed > flushed);
+        await settle();
+        check.equal(current.state.saves.length, 0, type);
+        check.equal(current.element.textContent, "Keep body", "background saves retain the original source");
+        check.equal(await current.editor.finish(), true, type);
+        check.equal(current.state.saves.length, 1, "closing commits the branch in one content snapshot");
+        check.equal(current.element.querySelector('[data-node-id="child"]').textContent, "New child");
+        check.equal(current.state.finished, 1);
+        check.equal(current.state.messages.length, 0);
+        await current.remove();
+    }
+    // 旧列表脑图中的独立脑图仍属于正文，保留其后台保存能力。
+    const legacyNested = create(paragraph("body", "Keep body"));
+    legacyNested.wysiwyg.insertAdjacentHTML("beforeend", '<div data-type="NodeMindmap" data-node-id="nested">' +
+        '<div data-type="NodeMindmapItem" data-node-id="nested-item">' + paragraph("child", "Nested body") + "</div></div>");
+    await settle();
+    window.dispatchEvent(new Event("blur"));
+    await until(() => legacyNested.state.saves.length === 1);
+    check.equal(legacyNested.element.querySelector('[data-node-id="child"]').textContent, "Nested body");
+    check.equal(await legacyNested.editor.finish(), true);
+    await legacyNested.remove();
+    // 粘贴到选中节点时保留原正文，在当前可见正文末尾启动上传；上传结束前保留编辑器。
+    const panEditor = create(paragraph("body", "Keep caret"));
+    const panTarget = document.createElement("div");
+    document.body.append(panTarget);
+    panEditor.state.panTarget = panTarget;
+    const editable = panEditor.wysiwyg.querySelector<HTMLElement>('[contenteditable="true"]');
+    editable.focus();
+    const panRange = document.createRange();
+    panRange.setStart(editable.firstChild, 3);
+    panRange.collapse(true);
+    getSelection().removeAllRanges();
+    getSelection().addRange(panRange);
+    panTarget.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true}));
+    await settle();
+    check.equal(panEditor.state.finished, 0, "canvas panning does not close the node editor");
+    check.equal(document.activeElement, editable);
+    check.equal(getSelection().anchorOffset, 3, "canvas panning retains the insertion point");
+    await require("electron").ipcRenderer.invoke("mindmap-view-editor-type", "X");
+    check.equal(editable.textContent, "KeeXp caret", "typing continues at the retained insertion point");
+    document.body.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true}));
+    await until(() => panEditor.state.finished === 1);
+    panTarget.remove();
+    await panEditor.remove();
+
+    const imageEditor = create(paragraph("body", "Keep text"));
+    const images = [new File(["image"], "image.png", {type: "image/png"})];
+    imageEditor.editor.pasteClipboard({files: images});
+    check.equal(imageEditor.state.focusedText, "Keep text");
+    check.deepEqual(imageEditor.state.uploads, [images]);
+    check.equal(imageEditor.wysiwyg.textContent, "Keep text");
+    imageEditor.protyle.upload.isUploading = true;
+    check.equal(await imageEditor.editor.finish(), false);
+    check.equal(imageEditor.state.destroyed, 0);
+    const image = document.createElement("img");
+    image.src = "assets/image.png";
+    imageEditor.wysiwyg.querySelector('[contenteditable="true"]').append(image);
+    imageEditor.protyle.upload.isUploading = false;
+    check.equal(await imageEditor.editor.finish(), true);
+    check.equal(imageEditor.element.querySelector("img").getAttribute("src"), "assets/image.png");
+    imageEditor.editor.pasteClipboard({files: images});
+    check.equal(imageEditor.state.uploads.length, 1, "closed editors do not accept another upload");
+    await imageEditor.remove();
+    // 关闭等待内层编辑结束时启动上传，也不能提前销毁外层编辑器。
+    const uploadingEditor = create();
+    const nestedGate = gate();
+    uploadingEditor.state.finishNested = () => nestedGate.promise.then(() => true);
+    const finishBeforeUpload = uploadingEditor.editor.finish();
+    uploadingEditor.protyle.upload.isUploading = true;
+    nestedGate.release();
+    check.equal(await finishBeforeUpload, false);
+    check.equal(uploadingEditor.state.destroyed, 0);
+    uploadingEditor.protyle.upload.isUploading = false;
+    check.equal(await uploadingEditor.editor.finish(), true);
+    await uploadingEditor.remove();
+    for (const active of ["first", "second"]) {
+        const tabs = create(`<div class="tabs" data-type="NodeTabs" data-node-id="tabs" tabs-active-id="${active}">
+            ${["first", "second"].map(id => `<div class="tab-item" data-type="NodeTabItem" data-node-id="${id}">
+                <div class="tab-item-info"><div class="tab-item-title">${id}</div></div>
+                <div class="tab-item-content">${paragraph(id + "-body", id)}</div></div>`).join("")}</div>`);
+        check.equal(tabs.state.focusedText, active, "opening an editor focuses the active tab instead of the last tab");
+        check.equal(tabs.wysiwyg.querySelector(".tabs").getAttribute("tabs-active-id"), active);
+        await tabs.remove();
+    }
     let typed = create(paragraph("first", "Old <strong>rich</strong>") +
         paragraph("second", "Keep") + '<div data-type="NodeThematicBreak" data-node-id="special"></div>', "N");
     check.equal(typed.wysiwyg.querySelector('[data-node-id="first"] > [contenteditable="true"]').textContent, "N");
@@ -239,8 +761,56 @@ const browserCases = async (sourceCode: string, css: string) => {
         await current.remove();
     }
 
+    // 页签重新渲染和切换编辑状态不会伪造正文冲突，隐藏页签的内容仍参与冲突检测。
+    const tabsHTML = '<div data-type="NodeTabs" data-node-id="tabs" class="tabs" tabs-position="top">' +
+        '<div data-type="NodeTabItem" data-node-id="tab" class="tab-item"><div class="tab-item-info">Title</div>' +
+        '<div class="tab-item-content">' + textHTML("Body") + "</div></div></div>";
+    const tabsEditor = create(tabsHTML);
+    tabsEditor.element.firstElementChild.insertAdjacentHTML("afterbegin", '<div class="tabs-header">Navigation</div>');
+    tabsEditor.element.querySelector(".tab-item-content").setAttribute("id", "siyuan-tabs-1-panel-0");
+    tabsEditor.wysiwyg.querySelector(".tab-item-content").setAttribute("id", "siyuan-tabs-2-panel-0");
+    tabsEditor.wysiwyg.querySelector(".tab-item").setAttribute("data-tabs-editing", "true");
+    tabsEditor.wysiwyg.querySelector('[data-node-id="paragraph"]').textContent = "Edited body";
+    await settle();
+    check.equal(await tabsEditor.editor.finish(), true);
+    check.equal(tabsEditor.state.messages.length, 0);
+    check.equal(tabsEditor.element.querySelector('[data-node-id="paragraph"]').textContent, "Edited body");
+    check.equal(tabsEditor.element.querySelector(".tabs").getAttribute("tabs-position"), "top");
+    await tabsEditor.remove();
+    const nestedEditor = create(tabsHTML);
+    nestedEditor.state.finishNested = async () => false;
+    check.equal(await nestedEditor.editor.finish(), false);
+    check.equal(nestedEditor.state.destroyed, 0, "failed nested saves keep the outer editor open");
+    nestedEditor.state.finishNested = async () => {
+        nestedEditor.wysiwyg.querySelector('[data-node-id="paragraph"]').textContent = "Nested edit";
+        return true;
+    };
+    check.equal(await nestedEditor.editor.finish(), true);
+    check.equal(nestedEditor.element.querySelector('[data-node-id="paragraph"]').textContent, "Nested edit");
+    await nestedEditor.remove();
+
+    const nestedKeys = create(tabsHTML);
+    const nestedView = document.createElement("div");
+    nestedView.className = "mindmap-view";
+    nestedView.tabIndex = 0;
+    nestedKeys.wysiwyg.append(nestedView);
+    nestedView.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+    nestedView.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", ctrlKey: true, bubbles: true}));
+    await settle();
+    check.equal(nestedKeys.state.finished, 0, "nested shortcuts must not finish the outer editor");
+    check.deepEqual(nestedKeys.state.additions, []);
+    await nestedKeys.remove();
+    const conflictingTabs = create(tabsHTML);
+    conflictingTabs.element.querySelector('[data-node-id="paragraph"]').textContent = "External change";
+    conflictingTabs.wysiwyg.querySelector('[data-node-id="paragraph"]').textContent = "Local change";
+    await settle();
+    check.equal(await conflictingTabs.editor.finish(), false);
+    check.equal(conflictingTabs.state.saves.length, 0);
+    await conflictingTabs.remove();
+
     // 数据库和嵌入结果在编辑期间重新渲染，不会挡住普通文字保存或覆盖新的独立块状态。
-    for (const type of ["NodeAttributeView", "NodeBlockQueryEmbed"]) {
+    for (const [type, embedded] of ["NodeAttributeView", "NodeBlockQueryEmbed"].flatMap(type =>
+        [false, true].map(embedded => [type, embedded] as const))) {
         const special = document.createElement("div");
         special.dataset.type = type;
         special.dataset.nodeId = "special";
@@ -250,7 +820,7 @@ const browserCases = async (sourceCode: string, css: string) => {
             special.dataset.content = "select * from blocks";
         }
         special.textContent = "Old projection";
-        const current = create(textHTML("Initial") + special.outerHTML);
+        const current = create(textHTML("Initial") + special.outerHTML, undefined, "NodeList", embedded);
         current.element.lastElementChild.setAttribute("updated", "20260923120000");
         current.element.lastElementChild.textContent = "Latest projection";
         current.wysiwyg.lastElementChild.setAttribute("data-render", "true");
@@ -539,6 +1109,62 @@ const browserCases = async (sourceCode: string, css: string) => {
     const style = document.createElement("style");
     style.textContent = css;
     document.head.append(style);
+    // 编辑浮层挂载在未缩放的脑图根元素，跨过画布边界时仍可点击。
+    for (const fullscreen of [false, true]) {
+        for (const scale of [.65, 1, 1.5]) {
+            const current = create(textHTML("Paint isolation"), undefined, "NodeMindmap", false, true);
+            current.container.style.cssText = "position:fixed;top:40px;left:40px;width:500px";
+            const map = current.host.closest<HTMLElement>(".mindmap-view");
+            map.classList.toggle("fullscreen", fullscreen);
+            const viewport = map.querySelector<HTMLElement>(".mindmap-view__viewport");
+            map.querySelector<HTMLElement>(".mindmap-view__world").style.transform = `translate(30px, 30px) scale(${scale})`;
+            const overlays = [current.hintElement, current.protyle.toolbar.element, current.protyle.toolbar.subElement];
+            for (const overlay of overlays) {
+                check.equal(overlay.parentElement, map, "editor overlays stay outside the isolated viewport");
+                const bounds = viewport.getBoundingClientRect();
+                const top = fullscreen ? bounds.bottom - 48 : bounds.bottom - 8;
+                overlay.style.cssText = `position:fixed;left:${bounds.left + 20}px;top:${top}px;` +
+                    "width:140px;height:36px;min-height:0;max-height:none;display:block;z-index:10";
+                overlay.classList.remove("fn__none");
+                const rect = overlay.getBoundingClientRect();
+                check.ok(Math.abs(rect.left - bounds.left - 20) < 1 && Math.abs(rect.top - top) < 1,
+                    "world zoom does not change editor overlay coordinates");
+                check.ok(overlay.contains(document.elementFromPoint(rect.left + 10, rect.bottom - 5)),
+                    "editor controls remain clickable outside the canvas and in fullscreen");
+                overlay.classList.add("fn__none");
+            }
+            check.equal(current.tableControl.parentElement, map, "table controls share the unscaled overlay container");
+            const handle = current.tableControl.querySelector<HTMLElement>("button");
+            handle.classList.remove("fn__none");
+            const bounds = viewport.getBoundingClientRect();
+            const x = bounds.left + 40;
+            const y = fullscreen ? bounds.bottom - 48 : bounds.bottom - 8;
+            handle.style.left = `${x}px`;
+            handle.style.top = `${y}px`;
+            const rect = handle.getBoundingClientRect();
+            check.ok(Math.abs(rect.left + rect.width / 2 - x) < 1 && Math.abs(rect.top + rect.height / 2 - y) < 1,
+                "table handle centers use screen coordinates without a second canvas transform");
+            check.ok(handle.contains(document.elementFromPoint(x, y)), "table handles remain clickable across the viewport edge");
+            handle.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, button: 0}));
+            await settle();
+            check.equal(current.state.finished, 0, "using table controls keeps the node editor open");
+            await current.type("Edited with paint isolation");
+            check.equal(await current.editor.finish(), true);
+            check.equal(current.tableControl.isConnected, false, "finishing releases the reparented table overlay");
+            check.ok(current.element.textContent.includes("Edited with paint isolation"), "editing still saves source content");
+            await current.remove();
+        }
+    }
+    const otherControlEditor = create(textHTML("Other editor"), undefined, "NodeMindmap", false, true);
+    const otherControl = document.createElement("div");
+    otherControl.className = "protyle-table-control";
+    otherControl.innerHTML = "<button>Other table</button>";
+    document.body.append(otherControl);
+    otherControl.firstElementChild.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, button: 0}));
+    await until(() => otherControlEditor.state.finished === 1);
+    check.equal(otherControlEditor.tableControl.isConnected, false, "another editor's controls finish the current session");
+    otherControl.remove();
+    await otherControlEditor.remove();
     const fixture = document.createElement("div");
     fixture.className = "protyle-wysiwyg";
     document.body.append(fixture);
@@ -605,24 +1231,146 @@ const browserCases = async (sourceCode: string, css: string) => {
                 "repeated editing does not change preview dimensions");
         }
     }
+    // 百分比宽度的内层画布不能在按内容撑开的节点中塌缩，缩放和大字号也保持可操作宽度。
+    for (const type of ["NodeList", "NodeMindmap"]) {
+        for (const fontSize of [16, 32]) {
+            fixture.style.fontSize = `${fontSize}px`;
+            fixture.innerHTML = '<div class="mindmap-view"><div class="mindmap-view__viewport"><div class="mindmap-view__world">' +
+                '<div class="mindmap-view__node mindmap-view__node--editing"><div class="mindmap-view__content mindmap-view__editor protyle">' +
+                '<div class="protyle-content" data-padding-mode="responsive"><div class="protyle-wysiwyg" spellcheck="false">' +
+                `<div data-type="${type}" class="${type === "NodeList" ? "list" : "mindmap"}" data-mindmap-view-rendered="true">` +
+                '<div class="mindmap-view"><div class="mindmap-view__toolbar block__icons"></div>' +
+                '<div class="mindmap-view__viewport"><div class="mindmap-view__world"></div></div></div>' +
+                "</div></div></div></div></div></div></div></div>";
+            const node = fixture.querySelector<HTMLElement>(".mindmap-view__node--editing");
+            const nested = fixture.querySelector<HTMLElement>(".mindmap-view__editor .mindmap-view");
+            for (const device of ["desktop", "mobile"]) {
+                fixture.style.width = device === "mobile" ? "320px" : "800px";
+                fixture.querySelector<HTMLElement>(".protyle-content").dataset.device = device;
+                for (const scale of [1, 0.65, 1.5]) {
+                    fixture.style.transform = `scale(${scale})`;
+                    check.ok(nested.offsetWidth >= 260, "nested canvases retain a usable intrinsic width");
+                    check.ok(node.offsetWidth <= 300, "nested canvases respect the node width limit");
+                }
+            }
+        }
+    }
     fixture.remove();
     style.remove();
     return "List mindmap editor lifecycle cases passed";
 };
 
-test("list mindmap editor flushes pending input and preserves text across finish, composition and destroy", {
-    skip: process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY,
-    timeout: 45000,
-}, async () => {
+test("mindmap editor overlays retain direct ownership outside the transformed content", () => {
+    const file = path.join(__dirname, "editor.ts");
+    const source = createSourceFile(file, readFileSync(file, "utf8"), ScriptTarget.Latest, true);
+    const declaration = source.statements.filter(isVariableStatement).flatMap(statement =>
+        Array.from(statement.declarationList.declarations)).find(item => item.name.getText(source) === "openListMindmapEditor");
+    assert.ok(declaration?.initializer && isArrowFunction(declaration.initializer) && isBlock(declaration.initializer.body));
+    const names = ["overlays", "overlayRoot", "belongs"];
+    const statements = declaration.initializer.body.statements.filter(statement =>
+        isVariableStatement(statement) && statement.declarationList.declarations.some(item => names.includes(item.name.getText(source))) ||
+        statement.getText(source).startsWith("overlays.forEach("));
+    assert.equal(statements.length, 4);
+    const code = transpileModule(statements.map(statement => statement.getText(source)).join("\n"), {
+        compilerOptions: {target: ScriptTarget.ES2021},
+    }).outputText;
+    class TestElement {
+        children: TestElement[] = [];
+        parentElement?: TestElement;
+        dataset: Record<string, string> = {};
+        constructor(readonly className = "") {}
+        appendChild(child: TestElement) {
+            if (child.parentElement) {
+                child.parentElement.children = child.parentElement.children.filter(item => item !== child);
+            }
+            this.children.push(child);
+            child.parentElement = this;
+        }
+        contains(target: TestElement): boolean {
+            return this === target || this.children.some(child => child.contains(target));
+        }
+        closest(selector: string): TestElement | undefined {
+            return selector === ".mindmap-view" ? this.className === "mindmap-view" ? this :
+                this.parentElement?.closest(selector) : undefined;
+        }
+        querySelectorAll(selector: string) {
+            assert.equal(selector, ":scope > .protyle-table-control");
+            return this.children.filter(child => child.className === "protyle-table-control");
+        }
+    }
+    const mount = new Function("host", "fragment", "document", "Element", "isMobile", code + "; return {overlays, belongs};");
+    for (const hasTableControl of [false, true]) {
+        const body = new TestElement();
+        const map = new TestElement("mindmap-view");
+        const host = new TestElement();
+        body.appendChild(map);
+        map.appendChild(host);
+        const hint = new TestElement();
+        const toolbar = new TestElement();
+        const subElement = new TestElement();
+        const control = new TestElement("protyle-table-control");
+        const button = new TestElement();
+        control.appendChild(button);
+        for (const element of [hint, toolbar, subElement, ...(hasTableControl ? [control] : [])]) host.appendChild(element);
+        const nested = new TestElement();
+        const nestedControl = new TestElement("protyle-table-control");
+        host.appendChild(nested);
+        nested.appendChild(nestedControl);
+        const {overlays, belongs} = mount(host, {hintElement: hint, protyle: {toolbar: {element: toolbar, subElement}}},
+            {body}, TestElement, () => false);
+        assert.equal(overlays.length, hasTableControl ? 4 : 3);
+        assert.ok(overlays.every((element: TestElement) => element.parentElement === map));
+        assert.equal(nestedControl.parentElement, nested, "nested editor controls retain their own owner");
+        assert.equal(belongs(nestedControl), true, "nested content remains within its parent editor");
+        assert.equal(belongs(button), hasTableControl, "only this editor's moved table control belongs to the session");
+        assert.equal(belongs(new TestElement("protyle-table-control")), false);
+        assert.equal(belongs(toolbar), true);
+    }
+});
+
+const runBrowserCases = async (tableSnapshots: boolean, imageSnapshots = false) => {
     const temporary = mkdtempSync(path.join(tmpdir(), "siyuan-mindmap-view-editor-test-"));
     const script = path.join(temporary, "run.cjs");
-    const source = transpileModule(readFileSync(path.join(__dirname, "editor.ts"), "utf8")
+    const source = transpileModule(["../../wysiwyg/codeBlockEnter.ts", "editor.ts"]
+        .map(file => readFileSync(path.join(__dirname, file), "utf8")).join("\n")
         .replace(/^import [\s\S]*?;\r?\n/gm, "").replace(/^export /gm, ""), {
         compilerOptions: {target: ScriptTarget.ES2021},
     }).outputText;
     const css = require("sass").compile(path.resolve(__dirname, "../../../assets/scss/base.scss"), {
         logger: require("sass").Logger.silent,
     }).css;
+    const modelSource = readFileSync(path.join(__dirname, "model.ts"), "utf8");
+    const cleanupSource = transpileModule(modelSource.slice(modelSource.indexOf("const cleanListMindmapDOM ="),
+        modelSource.indexOf("// 转换前将思维导图块还原为列表结构"))
+        .replace(/^export /gm, ""), {compilerOptions: {target: ScriptTarget.ES2021}}).outputText;
+    const tabsSource = ["../../../util/escape.ts", "../tabsState.ts", "../tabsDrag.ts", "../tabsAttributes.ts", "../tabsVisibility.ts", "../tabsRender.ts"]
+        .map(file => transpileModule(readFileSync(path.join(__dirname, file), "utf8")
+            .replace(/^import [\s\S]*?;\r?\n/gm, "").replace(/^export /gm, ""), {
+            compilerOptions: {target: ScriptTarget.ES2021},
+        }).outputText).join("\n");
+    const compile = (text: string) => transpileModule(text
+        .replace(/^import [\s\S]*?;\r?\n/gm, "")
+        .replace(/^export (?:type )?\{[\s\S]*?\}(?: from "[^"]+")?;\r?\n/gm, "")
+        .replace(/^export /gm, ""), {compilerOptions: {target: ScriptTarget.ES2021}}).outputText;
+    const tableSource = ["../../util/longTextWrap.ts", "../../util/inlineElementBoundary.ts", "../../toolbar/fontFamilyCore.ts",
+        "../../../util/escape.ts", "../../util/tableVirtualizationDOM.ts", "../setLute.ts", "../../wysiwyg/codeBlockUtil.ts",
+        "../av/richTextValue.ts", "../av/richText.ts", "../../util/tableCellRichValue.ts", "../../util/tableCellRich.ts"]
+        .map(file => compile(readFileSync(path.join(__dirname, file), "utf8"))).join("\n") +
+        "\nconst getTextWithoutSemanticMarkers = (() => {" +
+        compile(readFileSync(path.join(__dirname, "../../util/inlineElementMarker.ts"), "utf8")) +
+        "return getTextWithoutSemanticMarkers;})();";
+    const cellEditorFile = createSourceFile("tableCellRichEditor.ts", readFileSync(path.join(__dirname,
+        "../tableCellRichEditor.ts"), "utf8"), ScriptTarget.ES2021, true);
+    let cellCommitSource: string;
+    const findCellCommit = (node: import("typescript").Node) => {
+        if (isVariableStatement(node) && node.declarationList.declarations.some(item => item.name.getText(cellEditorFile) === "commit")) {
+            cellCommitSource = compile(node.getText(cellEditorFile));
+        }
+        node.forEachChild(findCellCommit);
+    };
+    findCellCommit(cellEditorFile);
+    assert.ok(cellCommitSource);
+    const lutePath = path.resolve(__dirname, "../../../../stage/protyle/js/lute/lute.min.js");
     const code = `const {app, BrowserWindow, ipcMain} = require("electron");
 app.setPath("userData", ${JSON.stringify(path.join(temporary, "profile"))});
 app.commandLine.appendSwitch("disable-gpu");
@@ -633,8 +1381,9 @@ app.whenReady().then(async () => {
     });
     try {
         await win.loadURL("data:text/html,<html><body></body></html>");
+        await win.webContents.executeJavaScript(require("node:fs").readFileSync(${JSON.stringify(lutePath)}, "utf8"));
         const result = await win.webContents.executeJavaScript(${JSON.stringify(
-        `const __name = value => value; (${browserCases.toString()})(${JSON.stringify(source)}, ${JSON.stringify(css)})`)});
+        `const __name = value => value; (${browserCases.toString()})(${JSON.stringify(source)}, ${JSON.stringify(css)}, ${JSON.stringify(cleanupSource)}, ${JSON.stringify(tabsSource)}, ${JSON.stringify(tableSource)}, ${JSON.stringify(cellCommitSource)}, ${tableSnapshots}, ${imageSnapshots})`)});
         console.log(result);
         win.destroy();
         app.exit(0);
@@ -650,8 +1399,25 @@ app.whenReady().then(async () => {
     try {
         const executable = require("electron") as unknown as string;
         const result = await promisify(execFile)(executable, [script], {env, timeout: 40000, windowsHide: true});
-        assert.match(result.stdout, /List mindmap editor lifecycle cases passed/);
+        assert.ok(result.stdout.includes(imageSnapshots ? "List mindmap image snapshot cases passed" :
+            tableSnapshots ? "List mindmap table snapshot cases passed" :
+            "List mindmap editor lifecycle cases passed"));
     } finally {
         rmSync(temporary, {recursive: true, force: true});
     }
-});
+};
+
+test("list mindmap editor flushes pending input and preserves text across finish, composition and destroy", {
+    skip: process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY,
+    timeout: 45000,
+}, () => runBrowserCases(false));
+
+test("list mindmap table snapshots preserve cell sources across autosave, finish, reopen and replay", {
+    skip: process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY,
+    timeout: 45000,
+}, () => runBrowserCases(true));
+
+test("list mindmap image snapshots ignore display sizing while preserving real source conflicts", {
+    skip: process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY,
+    timeout: 45000,
+}, () => runBrowserCases(false, true));

@@ -1,9 +1,11 @@
 import {isTableLikeView} from "./viewType";
+import {locateRequests} from "./locateState";
 import {Menu} from "../../../plugin/Menu";
 import {unicode2Emoji} from "../../../emoji";
 import {transaction} from "../../wysiwyg/transaction";
 import {openMenuPanel} from "./openMenuPanel";
-import {focusBlock, focusByRange, getEditorRange} from "../../util/selection";
+import {focusBlock, getEditorRange} from "../../util/selection";
+import {focusByRange} from "../../util/selectionOffsets";
 import {upDownHint} from "../../../util/upDownHint";
 import {escapeAriaLabel, escapeAttr, escapeHtml} from "../../../util/escape";
 import {hasClosestByClassName} from "../../util/hasClosest";
@@ -12,6 +14,8 @@ import {clearSelect} from "../../util/clear";
 import {getAVVisibleViewIDs, setAVVisibleViewIDs} from "./viewVisibility";
 import {isNotEditBlock} from "../../wysiwyg/getBlock";
 import {countFilterLeaves} from "./filterTree";
+import {isMobile} from "../../../util/functions";
+import {copyBlockSelection} from "../../util/blockClipboard";
 
 export const setAVBlockVisibleViewIDs = (
     protyle: IProtyle,
@@ -47,21 +51,24 @@ const copyViewMirror = (blockElement: Element, viewID: string) => {
     const oldViewID = blockElement.getAttribute(Constants.CUSTOM_SY_AV_VIEW);
     blockElement.setAttribute(Constants.CUSTOM_SY_AV_VISIBLE_VIEWS, viewID);
     blockElement.setAttribute(Constants.CUSTOM_SY_AV_VIEW, viewID);
-    if (isNotEditBlock(blockElement)) {
-        focusBlock(blockElement);
-    } else {
-        focusByRange(getEditorRange(blockElement));
-    }
-    document.execCommand("copy");
-    if (null === oldVisibleViewIDs) {
-        blockElement.removeAttribute(Constants.CUSTOM_SY_AV_VISIBLE_VIEWS);
-    } else {
-        blockElement.setAttribute(Constants.CUSTOM_SY_AV_VISIBLE_VIEWS, oldVisibleViewIDs);
-    }
-    if (null === oldViewID) {
-        blockElement.removeAttribute(Constants.CUSTOM_SY_AV_VIEW);
-    } else {
-        blockElement.setAttribute(Constants.CUSTOM_SY_AV_VIEW, oldViewID);
+    try {
+        if (isNotEditBlock(blockElement)) {
+            focusBlock(blockElement);
+        } else {
+            focusByRange(getEditorRange(blockElement));
+        }
+        copyBlockSelection(blockElement);
+    } finally {
+        if (null === oldVisibleViewIDs) {
+            blockElement.removeAttribute(Constants.CUSTOM_SY_AV_VISIBLE_VIEWS);
+        } else {
+            blockElement.setAttribute(Constants.CUSTOM_SY_AV_VISIBLE_VIEWS, oldVisibleViewIDs);
+        }
+        if (null === oldViewID) {
+            blockElement.removeAttribute(Constants.CUSTOM_SY_AV_VIEW);
+        } else {
+            blockElement.setAttribute(Constants.CUSTOM_SY_AV_VIEW, oldViewID);
+        }
     }
 };
 
@@ -215,7 +222,9 @@ export const bindViewEvent = (options: {
             options.menuElement.parentElement.remove();
         }
     });
-    inputElement.select();
+    if (!isMobile()) {
+        inputElement.select();
+    }
     inputElement.value = inputElement.dataset.value;
     const descElement = options.menuElement.querySelector('.b3-text-field[data-type="desc"]') as HTMLTextAreaElement;
     inputElement.nextElementSibling.addEventListener("click", () => {
@@ -293,6 +302,11 @@ export const getViewHTML = (data: IAV) => {
     <span class="b3-menu__accelerator">${fields.filter((item: IAVColumn) => !item.hidden).length}/${fields.length}</span>
     <svg class="b3-menu__icon b3-menu__icon--small"><use xlink:href="#iconRight"></use></svg>
 </button>
+<button class="b3-menu__item" data-type="go-sub-items">
+    <svg class="b3-menu__icon"><use xlink:href="#iconListTree"></use></svg>
+    <span class="b3-menu__label">${window.siyuan.languages.avSubItems}</span>
+    <svg class="b3-menu__icon b3-menu__icon--small"><use xlink:href="#iconRight"></use></svg>
+</button>
 <button class="b3-menu__item" data-type="goFilters">
     <svg class="b3-menu__icon"><use xlink:href="#iconFilter"></use></svg>
     <span class="b3-menu__label">${window.siyuan.languages.filter}</span>
@@ -305,6 +319,11 @@ export const getViewHTML = (data: IAV) => {
     <span class="b3-menu__accelerator">${view.conditionalColors?.length || 0}</span>
     <svg class="b3-menu__icon b3-menu__icon--small"><use xlink:href="#iconRight"></use></svg>
 </button>
+<button class="b3-menu__item" data-type="automations">
+    <svg class="b3-menu__icon"><use xlink:href="#iconZap"></use></svg>
+    <span class="b3-menu__label">${window.siyuan.languages.databaseAutomations}</span>
+    <svg class="b3-menu__icon b3-menu__icon--small"><use xlink:href="#iconRight"></use></svg>
+</button>
 <button class="b3-menu__item" data-type="goSorts">
     <svg class="b3-menu__icon"><use xlink:href="#iconSort"></use></svg>
     <span class="b3-menu__label">${window.siyuan.languages.sort}</span>
@@ -314,7 +333,7 @@ export const getViewHTML = (data: IAV) => {
 <button class="b3-menu__item${data.viewType === "calendar" ? " fn__none" : ""}" data-type="goGroups">
     <svg class="b3-menu__icon"><use xlink:href="#iconGroups"></use></svg>
     <span class="b3-menu__label">${window.siyuan.languages.group}</span>
-    <span class="b3-menu__accelerator">${escapeHtml((data.view.group && data.view.group.field) ? fields.filter((item: IAVColumn) => item.id === data.view.group.field)[0].name : "")}</span>
+    <span class="b3-menu__accelerator">${escapeHtml((data.view.group && data.view.group.field) ? fields.find((item: IAVColumn) => item.id === data.view.group.field)?.name || "" : "")}</span>
     <svg class="b3-menu__icon b3-menu__icon--small"><use xlink:href="#iconRight"></use></svg>
 </button>
 <button class="b3-menu__separator"></button>
@@ -333,7 +352,9 @@ export const getViewHTML = (data: IAV) => {
 
 export const bindSwitcherEvent = (options: { protyle: IProtyle, menuElement: Element, blockElement: Element }) => {
     const inputElement = options.menuElement.querySelector(".b3-text-field") as HTMLInputElement;
-    inputElement.focus();
+    if (!isMobile()) {
+        inputElement.focus();
+    }
     inputElement.addEventListener("keydown", (event) => {
         event.stopPropagation();
         if (event.isComposing) {
@@ -343,6 +364,7 @@ export const bindSwitcherEvent = (options: { protyle: IProtyle, menuElement: Ele
         if (event.key === "Enter") {
             const currentElement = options.menuElement.querySelector(".b3-menu__item--current") as HTMLElement;
             if (currentElement) {
+                locateRequests.delete(options.blockElement as HTMLElement);
                 const currentViewID = options.blockElement.getAttribute(Constants.CUSTOM_SY_AV_VIEW) ||
                     options.blockElement.querySelector(".av__views .item--focus")?.getAttribute("data-id");
                 if (currentElement.dataset.id !== currentViewID) {

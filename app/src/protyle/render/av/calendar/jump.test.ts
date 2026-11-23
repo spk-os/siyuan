@@ -3,6 +3,7 @@ import {readFileSync} from "node:fs";
 import {test} from "node:test";
 import {runInNewContext} from "node:vm";
 import {ModuleKind, ScriptTarget, transpileModule} from "typescript";
+import * as dateFormat from "../dateFormat";
 
 class Control {
     value = "";
@@ -33,7 +34,7 @@ const loadJump = () => {
     const dateExports = {} as typeof import("./date");
     const compilerOptions = {module: ModuleKind.CommonJS, target: ScriptTarget.ES2020};
     runInNewContext(transpileModule(readFileSync("src/protyle/render/av/calendar/date.ts", "utf8"),
-        {compilerOptions}).outputText, {exports: dateExports, Date, Intl, Math, Number});
+        {compilerOptions}).outputText, {exports: dateExports, Date, Intl, Math, Number, require: () => dateFormat});
     const jumpExports = {} as typeof import("./jump");
     let current: {
         date: Control;
@@ -43,7 +44,7 @@ const loadJump = () => {
         week: Control;
         confirm: {click: () => void};
         closed: boolean;
-        options: {prefixContent: string; extraContent: string};
+        options: {prefixContent: string; extraContent: string; width?: string};
     };
     runInNewContext(transpileModule(readFileSync("src/protyle/render/av/calendar/jump.ts", "utf8"),
         {compilerOptions}).outputText, {
@@ -52,6 +53,15 @@ const loadJump = () => {
             calendarISOWeek: "ISO week", calendarISOWeekYear: "ISO week year",
         }}},
         require: (name: string) => {
+            if (name === "../../../../util/functions") {
+                return {isMobile: () => false};
+            }
+            if (name === "../../../../datePicker/inline") {
+                return {bindInlineDatePicker: (_host: Control, input: Control) => {
+                    input.attributes["data-picker-bound"] = "true";
+                    return {validate: () => input.valid, update() {}, destroy() {}};
+                }};
+            }
             if (name === "./date") {
                 return dateExports;
             }
@@ -82,7 +92,7 @@ const loadJump = () => {
                     const controls: Record<string, Control> = {
                         "[data-calendar-jump-mode]": mode, "[data-dialog-input]": date,
                         "[data-calendar-jump-week]": weekFields, "[data-calendar-jump-year]": year,
-                        "[data-calendar-jump-number]": week,
+                        "[data-calendar-jump-number]": week, "[data-calendar-jump-picker]": new Control(),
                     };
                     current = {date, mode, year, week, weekFields, closed: false, options,
                         confirm: {click: () => options.onConfirm(date.value, dialog)}};
@@ -107,8 +117,11 @@ test("calendar jump keeps date entry and validates ISO week years", () => {
     const targets: number[] = [];
     jump.open(anchor, 1, value => targets.push(value));
     let dialog = jump.current();
+    assert.equal(dialog.options.width, "min(300px, 92vw)");
     assert.ok(dialog.options.prefixContent.includes("data-calendar-jump-mode"));
     assert.equal(dialog.date.value, "2027-01-01");
+    assert.equal(dialog.date.attributes["data-picker-bound"], "true");
+    assert.equal(targets.length, 0, "binding the picker does not jump or write a date");
     assert.equal(dialog.date.attributes["aria-label"], "Go to date");
     assert.equal(dialog.year.value, "2026");
     assert.equal(dialog.week.value, "53");

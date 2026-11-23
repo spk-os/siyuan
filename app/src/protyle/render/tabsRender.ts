@@ -2,13 +2,17 @@ import {resolveTabID, tabKeyboardTarget} from "./tabsState";
 import {bindTabsDrag, cancelTabsDrag, isDraggingTabs} from "./tabsDrag";
 import {escapeHtml} from "../../util/escape";
 import {clearTabsAttributes, renderTabsAttributes} from "./tabsAttributes";
+import {isHiddenTabContent} from "./tabsVisibility";
 
 export interface ITabsRenderOptions {
+    prepare?: () => void;
     readonly?: (tabs?: Element) => boolean;
     taskReadonly?: (tabs?: Element) => boolean;
     label?: string;
     addLabel?: string;
     select?: (tabs: HTMLElement, id: string) => void;
+    restore?: (tabs: HTMLElement) => string;
+    remember?: (tabs: HTMLElement, id: string) => void;
     activate?: (item: HTMLElement) => void;
     rename?: (item: HTMLElement) => void;
     add?: (tabs: HTMLElement) => void;
@@ -35,6 +39,7 @@ interface ITabState {
 interface ITabsRoot {
     options: ITabsRenderOptions;
     render: () => void;
+    endTitleEditing: () => void;
     observer: MutationObserver;
     resize: ResizeObserver;
     destroy: () => void;
@@ -44,6 +49,7 @@ interface ITabsRoot {
 const roots = new WeakMap<Element, ITabsRoot>();
 const states = new WeakMap<HTMLElement, ITabState>();
 const boundHeaders = new WeakSet<Element>();
+const suspendedTitleExits = new WeakMap<HTMLElement, number>();
 let instanceID = 0;
 
 export const getTabItems = (tabs: Element): HTMLElement[] =>
@@ -117,12 +123,16 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
         const selection = window.getSelection();
         const active = document.activeElement;
         // 工具栏及其弹窗继续使用标题选区，不结束正在进行的富文本编辑。
-        if (active?.closest(".protyle-toolbar, .protyle-util, .b3-menu, .b3-dialog")) {
+        if (active?.closest(".protyle-toolbar, .protyle-util, .protyle-hint, #keyboardToolbar, .b3-menu, .b3-dialog")) {
             return;
         }
         let changed = false;
         element.querySelectorAll<HTMLElement>('.tab-item[data-tabs-editing="true"]').forEach(item => {
             if (!owns(item)) {
+                return;
+            }
+            // 引用移除预检暂时清空选区并冻结编辑器，不等于用户结束标题编辑。
+            if (suspendedTitleExits.has(item) && element.closest("[inert]")) {
                 return;
             }
             const title = getTabTitle(item);
@@ -151,6 +161,7 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
     };
     const controller: ITabsRoot = {
         options,
+        endTitleEditing,
         select(tabs, id, persist) {
             // 文档刚插入时观察器尚未渲染，先初始化状态以支持立即跳转到隐藏页签。
             if (!states.has(tabs)) {
@@ -165,6 +176,9 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
             }
             state.active = id;
             state.pending = undefined;
+            if (persist) {
+                controller.options.remember?.(tabs, id);
+            }
             if (persist && !controller.options.readonly?.(tabs)) {
                 controller.options.select?.(tabs, id);
             }
@@ -176,6 +190,7 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
             }
             controller.observer.disconnect();
             controller.resize.disconnect();
+            controller.options.prepare?.();
             const focusedAttributes = document.activeElement?.closest<HTMLElement>(".tabs-attributes");
             const focusedAttributesID = focusedAttributes && element.contains(focusedAttributes) ?
                 focusedAttributes.dataset.blockId : undefined;
@@ -190,7 +205,9 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
                 const source = resolveTabID(ids, tabs.getAttribute("tabs-active-id"));
                 let state = states.get(tabs);
                 if (!state || state.owner !== controller) {
-                    state = {owner: controller, active: source, source, instance: `siyuan-tabs-${++instanceID}`};
+                    const restored = controller.options.restore?.(tabs);
+                    state = {owner: controller, active: ids.includes(restored) ? restored : source,
+                        source, instance: `siyuan-tabs-${++instanceID}`};
                     states.set(tabs, state);
                 }
                 const current = items.find(item => itemID(item) === state.active);
@@ -284,7 +301,7 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
                         button.id = `${state.instance}-tab-${index}`;
                         const title = getTabTitle(item);
                         const label = title?.textContent || controller.options.label || "Tab";
-                        if (title?.textContent) {
+                        if (title && (title.textContent || title.querySelector("img"))) {
                             const clone = title.cloneNode(true) as HTMLElement;
                             clone.className = "tabs-tab-label";
                             clone.removeAttribute("contenteditable");
@@ -301,7 +318,14 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
                             button.innerHTML = '<span class="tabs-tab-label"></span>';
                             button.firstElementChild.textContent = label;
                         }
-                        button.setAttribute("aria-label", escapeHtml(button.textContent));
+                        const tooltipElement = button.cloneNode(true) as HTMLElement;
+                        tooltipElement.querySelectorAll(".img").forEach(image => {
+                            image.replaceWith(...image.querySelectorAll("img"));
+                        });
+                        const tooltip = tooltipElement.textContent.replace(/\u200b/g, "").trim() ||
+                            Array.from(tooltipElement.querySelectorAll("img"), image => image.alt.replace(/\u200b/g, "").trim())
+                            .filter(Boolean).join(" ") || controller.options.label || "Tab";
+                        button.setAttribute("aria-label", escapeHtml(tooltip));
                         button.setAttribute("data-position", "north");
                         const marker = getTabTask(item);
                         if (marker !== null) {
@@ -569,6 +593,34 @@ export const tabsRender = (element: Element, options: ITabsRenderOptions = {}) =
 
 export const destroyTabsRender = (element: Element) => roots.get(element)?.destroy();
 
+// 只暂停指定标题的自动退出，不阻止切换页签、只读渲染或后续焦点所有权检查。
+export const suspendTabTitleEditingExit = (item?: HTMLElement) => {
+    if (!item) {
+        return () => {};
+    }
+    suspendedTitleExits.set(item, (suspendedTitleExits.get(item) || 0) + 1);
+    let released = false;
+    return () => {
+        if (released) {
+            return;
+        }
+        released = true;
+        const remaining = suspendedTitleExits.get(item) - 1;
+        if (remaining > 0) {
+            suspendedTitleExits.set(item, remaining);
+            return;
+        }
+        suspendedTitleExits.delete(item);
+        for (let root: Element = item; root; root = root.parentElement) {
+            const controller = roots.get(root);
+            if (controller) {
+                controller.endTitleEditing();
+                break;
+            }
+        }
+    };
+};
+
 export const setTabTitleNavigationEditing = (item: HTMLElement, editing: boolean) => {
     for (let root: Element = item; root; root = root.parentElement) {
         const controller = roots.get(root);
@@ -611,7 +663,7 @@ export const revealTabAncestors = (root: Element, target: Element, persist = tru
     }
     path.forEach(panel => {
         const tabs = panel.parentElement;
-        if (tabs.classList.contains("tabs") && panel.getAttribute("data-tabs-hidden") !== "false") {
+        if (tabs.classList.contains("tabs") && isHiddenTabContent(panel)) {
             roots.get(root)?.select(tabs, itemID(panel), persist);
         }
     });

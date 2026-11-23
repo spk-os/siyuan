@@ -1,0 +1,126 @@
+.protyle-block-resize {
+  --protyle-resize-bottom-height: 12px;
+  --protyle-resize-side-length: 40px;
+  --protyle-resize-corner-size: 20px;
+
+  position: absolute;
+  z-index: 6;
+  touch-action: none;
+  user-select: none;
+  box-sizing: border-box;
+  opacity: 0;
+  color: var(--b3-theme-on-surface-light);
+
+  &::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    box-sizing: border-box;
+  }
+
+  &[data-resize-axis="width"] {
+    --protyle-resize-side-height: max(0px, min(var(--protyle-resize-side-length), 50%, 100% - var(--protyle-resize-corner-size)));
+
+    // 矮块上的右侧把手止于右下角把手的上方。
+    width: 12px;
+    height: var(--protyle-resize-side-height);
+    right: 0;
+    top: min(50%, 100% - var(--protyle-resize-corner-size) - var(--protyle-resize-side-height) / 2);
+    transform: translateY(-50%);
+    cursor: ew-resize;
+
+    &::after {
+      width: 3px;
+      height: min(24px, 100%);
+      right: 2px;
+      top: 50%;
+      transform: translateY(-50%);
+      border-radius: 2px;
+      background-color: currentColor;
+    }
+  }
+
+  &[data-resize-axis="height"] {
+    height: var(--protyle-resize-bottom-height);
+    width: min(var(--protyle-resize-side-length), 50%);
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    cursor: ns-resize;
+
+    &::after {
+      height: 3px;
+      width: min(24px, 100%);
+      top: 4px;
+      left: 50%;
+      transform: translateX(-50%);
+      border-radius: 2px;
+      background-color: currentColor;
+    }
+
+    &.protyle-action__drag::after,
+    &.mindmap-view__resize::after {
+      top: auto;
+      bottom: 2px;
+    }
+  }
+
+  &[data-resize-axis="both"] {
+    width: min(var(--protyle-resize-corner-size), 100%);
+    height: min(var(--protyle-resize-corner-size), 100%);
+    right: 0;
+    bottom: 0;
+    cursor: nwse-resize;
+
+    &::after {
+      width: min(16px, calc(100% - 2px));
+      height: min(16px, calc(100% - 2px));
+      right: 2px;
+      bottom: 2px;
+      border-right: 3px solid currentColor;
+      border-bottom: 3px solid currentColor;
+      border-bottom-right-radius: 10px;
+    }
+  }
+
+  &:hover,
+  &:focus-visible {
+    color: var(--b3-theme-on-surface);
+  }
+
+  &:focus-visible {
+    opacity: 1;
+    outline: 1px solid var(--b3-theme-primary);
+    outline-offset: -2px;
+  }
+
+  &.touch-resize-active {
+    opacity: 1;
+    color: var(--b3-theme-primary);
+    background-color: transparent;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .protyle-block-resize {
+    --protyle-resize-bottom-height: 20px;
+    --protyle-resize-side-length: 48px;
+    --protyle-resize-corner-size: 32px;
+
+    &[data-resize-axis="width"] {
+      width: 20px;
+    }
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .protyle-block-resize {
+    opacity: 1;
+  }
+}
+
+@media print {
+  .protyle-block-resize {
+    display: none;
+  }
+}

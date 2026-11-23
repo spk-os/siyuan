@@ -1,4 +1,18 @@
+.b3-text-field__mask,
+.av__mask {
+  position: fixed;
+  inset: 0;
+}
+
+.b3-text-field__mask > .b3-text-field {
+  position: absolute;
+  resize: none;
+}
+
 .b3-text-field {
+  &--touch {
+    min-height: 44px;
+  }
   border: 0;
   border-radius: var(--b3-border-radius);
   outline: 1px solid var(--b3-border-color);

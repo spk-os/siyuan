@@ -346,14 +346,23 @@ def frontend_versions(text):
         if match[1]:
             versions.add(match[1])
             continue
-        # 仅解析 Constants 模块内紧邻赋值的常量，不执行安装包里的 JavaScript。
+        # 仅解析 Constants 模块或压缩后的类绑定附近的常量，不执行安装包里的 JavaScript。
         prefix = text[max(0, match.start() - 3000):match.start()]
         marker = prefix.rfind("Constants:")
         if marker < 0:
             marker = prefix.rfind("class Constants")
         if marker < 0:
-            continue
-        prefix = prefix[marker:]
+            minified = re.search(
+                r"\b(?P<binding>[A-Za-z_$][\w$]*)\s*=\s*class\s*\{\s*\}\s*;\s*"
+                r"(?P=binding)\.\s*$", prefix) or re.search(
+                r"\b(?P<binding>[A-Za-z_$][\w$]*)\s*=\s*class\s*\{\s*\}\s*;\s*"
+                r"(?:let|const|var)\s+(?P<receiver>[A-Za-z_$][\w$]*)\s*=\s*(?P=binding)\s*;\s*"
+                r"(?P=receiver)\.\s*$", prefix)
+            if minified is None:
+                continue
+            prefix = prefix[:minified.start()]
+        else:
+            prefix = prefix[marker:]
         binding = re.compile(r"(?:\bconst\s+|\blet\s+|\bvar\s+|,)" + re.escape(match[2])
                              + r"\s*=\s*[\"'](" + VERSION + r")[\"']")
         candidates = {item[1] for item in binding.finditer(prefix)}
@@ -391,12 +400,28 @@ def resolve_resource(source, url):
 
 
 def check_frontend_entries(paths, mobile):
-    entries = ["stage/build/mobile/index.html"]
+    entries = ["stage/build/mobile/index.html", "stage/build/markdown/index.html"]
     if not mobile:
         # 桌面安装包同时提供主窗口、独立窗口及桌面和移动浏览器入口。
         entries.extend(("stage/build/app/index.html", "stage/build/app/window.html",
                         "stage/build/desktop/index.html"))
     errors = [f"缺少前端入口：{entry}" for entry in entries if entry not in paths]
+    if "stage/protyle/js/lute/lute.min.js" not in paths:
+        errors.append("缺少共享 Lute 资源：stage/protyle/js/lute/lute.min.js")
+    if "stage/build/markdown/vditor/dist/js/lute/lute.min.js" in paths:
+        errors.append("重复的 Markdown Lute 资源：stage/build/markdown/vditor/dist/js/lute/lute.min.js")
+    if any(name.startswith("stage/build/markdown/vditor/dist/images/emoji/") for name in paths):
+        errors.append("残留的 Markdown 图片表情资源：stage/build/markdown/vditor/dist/images/emoji/")
+    for asset in ("vditor/LICENSE", "vditor/dist/js/i18n/en_US.js",
+                  "vditor/dist/js/icons/ant.js", "vditor/dist/js/katex/katex.min.js",
+                  "vditor/dist/js/katex/katex.min.css", "vditor/dist/js/katex/mhchem.min.js",
+                  "vditor/dist/js/highlight.js/highlight.min.js", "appearance/themes/daylight/theme.css",
+                  "appearance/themes/midnight/theme.css", "appearance/icons/litheness/icon.js",
+                  "vditor/licenses/KaTeX-LICENSE", "vditor/licenses/KaTeX-fonts-LICENSE",
+                  "vditor/licenses/KaTeX-mhchem-NOTICE", "vditor/licenses/Apache-2.0-LICENSE"):
+        name = "stage/build/markdown/" + asset
+        if name not in paths:
+            errors.append(f"缺少 Markdown 离线资源：{name}")
     if "stage/build/export/protyle-method.js" not in paths:
         errors.append("缺少导出前端：stage/build/export/protyle-method.js")
     return errors

@@ -1,24 +1,15 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package av
 
 import (
+	"fmt"
+	"slices"
 	"time"
 
+	"github.com/88250/lute"
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/parse"
 	"github.com/siyuan-note/logging"
@@ -26,9 +17,12 @@ import (
 )
 
 const (
-	CurrentSpec   = 10
+	CurrentSpec   = 17
+	TextImageSpec = 17
 	PlainTextSpec = 8
 	RichTextSpec  = 9
+	// 单一 WGS84 位置使用独立版本，防止其他格式的内核重写坐标含义。
+	LocationSpec = 13
 )
 
 const MaxFilterNestingDepth = 3
@@ -48,6 +42,18 @@ func UpgradeSpec(av *AttributeView) {
 	upgradeSpec8(av)
 	upgradeSpec9(av)
 	upgradeSpec10(av)
+	if av.Spec < LocationSpec && av.HasLocation() {
+		av.Spec = LocationSpec
+	}
+	if av.HasSubItems() && av.Spec < SubItemsSpec {
+		av.Spec = SubItemsSpec
+	}
+	if av.HasPrimaryRich() && av.Spec < PrimaryRichSpec {
+		av.Spec = PrimaryRichSpec
+	}
+	if av.HasPrimaryBlockRich() && av.Spec < PrimaryBlockRichSpec {
+		av.Spec = PrimaryBlockRichSpec
+	}
 }
 
 // upgradeSpec10 仅为包含列表或日历配置的数据库升级，保留其他数据库的旧版兼容性。
@@ -63,26 +69,31 @@ func upgradeSpec10(av *AttributeView) {
 		if nil != view.List || nil != view.Calendar {
 			return true
 		}
-		for _, group := range view.Groups {
-			if needsUpgrade(group) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(view.Groups, needsUpgrade)
 	}
-	for _, view := range av.Views {
-		if needsUpgrade(view) {
-			av.Spec = 10
-			return
-		}
+	if slices.ContainsFunc(av.Views, needsUpgrade) {
+		av.Spec = 10
+		return
 	}
 }
 
 func CheckSpec(av *AttributeView) (err error) {
+	if av.HasPrimaryBlockRich() && av.Spec < PrimaryBlockRichSpec {
+		return fmt.Errorf("primary block rich text requires format %d", PrimaryBlockRichSpec)
+	}
+	if av.HasPrimaryRich() && av.Spec < PrimaryRichSpec {
+		return fmt.Errorf("primary rich text requires format %d", PrimaryRichSpec)
+	}
+	if av.HasSubItems() && av.Spec < SubItemsSpec {
+		return fmt.Errorf("database sub-items require format %d", SubItemsSpec)
+	}
 	if CurrentSpec < av.Spec {
 		logging.LogErrorf("attribute view [%s] spec [%d] is newer than current [%d]", av.ID, av.Spec, CurrentSpec)
 		err = ErrSpecTooNew
 		return
+	}
+	if av.Spec < LocationSpec && av.HasLocation() {
+		return ErrLocationSpecMismatch
 	}
 	if av.Spec < RichTextSpec && av.HasRichText() {
 		logging.LogErrorf("attribute view [%s] rich text requires spec [%d], current is [%d]", av.ID, RichTextSpec, av.Spec)
@@ -116,36 +127,69 @@ func (av *AttributeView) HasRichText() bool {
 }
 
 // NormalizeRichText 校验所有富文本载荷，并刷新对应的纯文本投影。
-func (av *AttributeView) NormalizeRichText() (err error) {
+func (av *AttributeView) NormalizeRichText() error {
+	return av.normalizeRichText(nil)
+}
+
+func (av *AttributeView) normalizeRichText(saveSpec *int) (err error) {
 	if nil == av {
 		return
 	}
-	type normalizedText struct {
-		value       *ValueText
+	type projection struct {
 		content     string
 		richContent string
 	}
+	type normalizedText struct {
+		value *ValueText
+		projection
+	}
 	var normalized []normalizedText
+	spec := av.Spec
+	projections := map[ValueTextRich]projection{}
+	var luteEngine *lute.Lute
 	av.visitPersistedValues(func(value *Value) {
 		if nil != err || nil == value.Text || !value.Text.IsRich() {
 			return
 		}
 		rich := *value.Text.Rich
+		if cached, ok := projections[rich]; ok {
+			normalized = append(normalized, normalizedText{value.Text, cached})
+			return
+		}
+		if luteEngine == nil {
+			luteEngine = newValueTextRichLute()
+		}
 		var tree *parse.Tree
-		if tree, err = NormalizeValueTextRich(&rich); nil == err {
-			normalized = append(normalized, normalizedText{
-				value:       value.Text,
-				content:     valueTextRichPlainContent(tree),
-				richContent: rich.Content,
-			})
+		if tree, err = normalizeValueTextRichWithLute(&rich, luteEngine); nil == err {
+			if spec < TextImageSpec {
+				ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+					if entering && node.Type == ast.NodeImage {
+						spec = TextImageSpec
+						return ast.WalkStop
+					}
+					return ast.WalkContinue
+				})
+			}
+			result := projection{valueTextRichPlainContent(tree), rich.Content}
+			projections[*value.Text.Rich] = result
+			normalized = append(normalized, normalizedText{value.Text, result})
 		}
 	})
 	if nil != err {
 		return
 	}
+	if spec != av.Spec && saveSpec == nil {
+		return fmt.Errorf("text field images require database format %d", TextImageSpec)
+	}
+	if err = av.NormalizePrimaryRich(); err != nil {
+		return
+	}
 	for _, text := range normalized {
 		text.value.Content = text.content
 		text.value.Rich.Content = text.richContent
+	}
+	if saveSpec != nil {
+		*saveSpec = spec
 	}
 	return
 }

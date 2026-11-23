@@ -9,13 +9,15 @@ import {createSourceFile, isClassDeclaration, isMethodDeclaration, ScriptTarget,
 
 const browserCases = async (source: string, hintSource: string) => {
     const check: typeof assert = require("node:assert/strict");
-    const {mount, render, paddingElement} = new Function(source + hintSource +
-        "\nreturn {mount: mountLiteSlashMenu, render: Hint.prototype.getHTMLByData, paddingElement: getMobileToolbarPaddingElement};")() as {
+    let android = false;
+    const {mount, render, paddingElement} = new Function("getFrequentSlashItems", "getSlashEntryKey", "escapeAttr", "isInAndroid", source + hintSource +
+        "\nreturn {mount: mountLiteSlashMenu, render: Hint.prototype.getHTMLByData, paddingElement: getMobileToolbarPaddingElement};")(
+        (): IHintData[] => [], (item: {entryKey?: string}) => item.entryKey || "", (value: string) => value, () => android) as {
         mount: typeof import("./liteSlashMenu").mountLiteSlashMenu,
         render: (data: IHintData[]) => string,
         paddingElement: typeof import("../../protyle/lite/mobileToolbar").getMobileToolbarPaddingElement,
     };
-    window.siyuan = {languages: {emptyContent: "Empty"}} as unknown as typeof window.siyuan;
+    window.siyuan = {languages: {emptyContent: "Empty", insertImage: "Image", insertPhoto: "Photo"}} as unknown as typeof window.siyuan;
     const element = document.createElement("div");
     element.className = "protyle-hint fn__none";
     document.body.appendChild(element);
@@ -50,6 +52,26 @@ const browserCases = async (source: string, hintSource: string) => {
         {value: "", html: "separator"}];
     const provider = {key: "/", hint: (): IHintData[] => items};
     const protyle = {hint, options: {hint: {extend: [provider]}}} as unknown as IProtyle;
+    const upload = {id: "insertAsset", entryKey: "insertAsset", value: "upload", html: itemHTML("File") +
+        '<input class="b3-form__upload" type="file" multiple accept="*/*">'};
+    for (android of [false, true]) {
+        provider.hint = () => [upload];
+        const restore = mount(protyle, panel);
+        const inputs = panel.querySelectorAll<HTMLInputElement>('input[type="file"]');
+        check.equal(inputs.length, android ? 3 : 1);
+        if (android) {
+            check.equal(inputs[0].accept, "image/*,application/x-siyuan-image-picker");
+            check.equal(inputs[0].dataset.nativePhotos, "true");
+            check.equal(inputs[1].getAttribute("capture"), "user");
+            check.equal(inputs[1].accept, "image/*");
+            check.equal(inputs[2].accept, "*/*");
+            check.deepEqual(Array.from(panel.querySelectorAll("button"), button => button.dataset.slashEntryKey),
+                ["insertAsset", "insertAsset", "insertAsset"]);
+        }
+        restore();
+    }
+    android = false;
+    provider.hint = () => items;
     let unmount = mount(protyle, panel);
     check.equal(panel.querySelectorAll("button.keyboard__slash-item[data-value]").length, 3);
     check.equal(panel.querySelectorAll(".keyboard__slash-block").length, 2);
@@ -81,8 +103,11 @@ const browserCases = async (source: string, hintSource: string) => {
         element.textContent = "Loading";
         finishRequest = () => {
             if (hint.enableExtend && !element.classList.contains("fn__none")) {
-                hint.genHTML([{value: "skill", html: itemHTML("Skill") +
-                    '<div class="b3-list-item__meta b3-list-item__showall">Skill description</div>'}]);
+                hint.genHTML([{value: "skill", html: itemHTML("Skill").replace('class="b3-list-item__first"',
+                    'class="b3-list-item__first" data-type="agent-skill"') +
+                    '<div class="b3-list-item__meta b3-list-item__showall">Skill description</div>'},
+                {value: "shortSkill", html: itemHTML("Short skill").replace('class="b3-list-item__first"',
+                    'class="b3-list-item__first" data-type="agent-skill"')}]);
             }
         };
         return [];
@@ -91,9 +116,22 @@ const browserCases = async (source: string, hintSource: string) => {
     check.equal(panel.textContent, "Loading");
     await Promise.resolve();
     finishRequest();
-    check.equal(panel.querySelector('[data-value="skill"]').className, "keyboard__slash-item");
+    check.equal(panel.querySelector('[data-value="skill"]').className, "keyboard__slash-item keyboard__slash-item--full");
     check.equal(panel.querySelector(".keyboard__slash-description").textContent, "Skill description");
     check.equal(panel.querySelector(".b3-list-item"), null);
+    for (const width of [320, 390, 768]) {
+        toolbar.style.width = `${width}px`;
+        for (const fontSize of [16, 32]) {
+            panel.style.fontSize = `${fontSize}px`;
+            const first = panel.querySelector('[data-value="skill"]').getBoundingClientRect();
+            const second = panel.querySelector('[data-value="shortSkill"]').getBoundingClientRect();
+            check.ok(first.width > width * 0.9);
+            check.equal(first.left, second.left);
+            check.ok(second.top >= first.bottom);
+            check.equal(panel.scrollWidth, panel.clientWidth);
+        }
+    }
+    panel.style.fontSize = "";
     unmount();
     unmount = mount(protyle, panel);
     unmount();
@@ -145,7 +183,8 @@ test("mobile slash panel retains synchronous and asynchronous candidates and rel
 }, async () => {
     const source = transpileModule((readFileSync(path.join(__dirname, "liteSlashMenu.ts"), "utf8") + "\n" +
         readFileSync(path.join(__dirname, "../../protyle/lite/mobileToolbar.ts"), "utf8"))
-        .replace(/^export /gm, ""), {compilerOptions: {target: ScriptTarget.ES2021}}).outputText;
+        .replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, ""),
+    {compilerOptions: {target: ScriptTarget.ES2021}}).outputText;
     const hintFile = createSourceFile("hint.ts", readFileSync(path.join(__dirname, "../../protyle/hint/index.ts"), "utf8"),
         ScriptTarget.Latest, true);
     const hintClass = hintFile.statements.find(isClassDeclaration);

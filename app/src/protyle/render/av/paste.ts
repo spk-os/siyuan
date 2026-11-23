@@ -1,11 +1,3 @@
-export const AV_PASTE_READONLY_TYPES = new Set<TAVCol>([
-    "created",
-    "updated",
-    "template",
-    "rollup",
-    "lineNumber",
-]);
-
 const isStrictNumber = (value: string) => {
     const trimmed = value.trim();
     if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
@@ -212,4 +204,12 @@ export const getUniqueAVPasteColumnName = (baseName: string, usedNames: Set<stri
         index++;
     }
     return `${baseName} ${index}`;
+};
+// 树形粘贴只覆盖当前页的可见条目，包含筛选上下文，不跨入折叠或尚未加载的分支。
+export const getAVNestedPasteItemIDs = (rows: IAVRow[], startItemID: string, count: number) => {
+    const start = rows.findIndex(row => row.id === startItemID);
+    if (start < 0) {
+        return [];
+    }
+    return [...new Set(rows.slice(start).map(row => row.id))].slice(0, Math.max(1, count));
 };

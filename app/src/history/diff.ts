@@ -1,11 +1,12 @@
-import {fetchPost} from "../util/fetch";
+import {AdaptiveDialog} from "../dialog/adaptiveDialog";
+import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {Dialog} from "../dialog";
 import {Protyle} from "../protyle";
 import {Constants} from "../constants";
 import {disabledProtyle, onGet} from "../protyle/util/onGet";
 import {hasClosestByClassName} from "../protyle/util/hasClosest";
 import {escapeAttr, escapeHtml} from "../util/escape";
-import * as dayjs from "dayjs";
+import dayjs from "dayjs";
 import {isMobile} from "../util/functions";
 import type {App} from "../index";
 import {pathPosix} from "../util/pathName";
@@ -438,7 +439,8 @@ export const showDiff = (app: App, data: { id: string, time: string }[]) => {
         expanded: new Set(),
     };
 
-    const dialog = new Dialog({
+    const dialog = new AdaptiveDialog({
+        mobileSheet: {mode: "expanded"},
         title: window.siyuan.languages.compare,
         content: "",
         width: isMobile() ? "100vw" : "90vw",
@@ -522,11 +524,14 @@ export const showDiff = (app: App, data: { id: string, time: string }[]) => {
                 event.stopPropagation();
                 break;
             } else if (target.getAttribute("data-type") == "rollback") {
-                confirmDialog("⚠️ " + window.siyuan.languages.rollback,
-                    window.siyuan.languages.rollbackConfirm.replace("${name}", () => escapeHtml(target.parentElement.dataset.title)).replace("${time}", dayjs(parseInt(target.parentElement.dataset.created)).format("YYYY-MM-DD HH:mm:ss")),
-                    () => {
-                        fetchPost("/api/repo/rollbackRepoSnapshotFile", {id: target.parentElement.dataset.id});
-                    });
+                confirmDialog({
+                    title: "⚠️ " + window.siyuan.languages.rollback,
+                    text: window.siyuan.languages.rollbackConfirm.replace("${name}", () => escapeHtml(target.parentElement.dataset.title)).replace("${time}", dayjs(parseInt(target.parentElement.dataset.created)).format("YYYY-MM-DD HH:mm:ss")),
+                    confirm: async () => {
+                        const response = await fetchSyncPost("/api/repo/rollbackRepoSnapshotFile", {id: target.parentElement.dataset.id});
+                        return response.code === 0;
+                    },
+                });
                 event.preventDefault();
                 event.stopPropagation();
                 break;

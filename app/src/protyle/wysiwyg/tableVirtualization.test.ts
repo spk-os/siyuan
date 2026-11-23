@@ -100,13 +100,19 @@ body {margin:0; --b3-theme-surface-lighter:#ddd; --b3-font-size-editor:16px; --b
         for (const type of ["pointerdown", "keydown", "beforeinput", "copy", "cut", "paste", "contextmenu"]) {
             outside.dispatchEvent(new Event(type, {bubbles: true}));
         }
+        outside.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, buttons: 1, pointerType: "mouse"}));
         for (const width of [600, 540, 460, 380, 640]) {
+            f.editor.dispatchEvent(new PointerEvent("pointermove", {
+                bubbles: true, buttons: 1, pointerType: "mouse", movementX: 10,
+            }));
+            tables.forEach(table => reduced(table, "external divider drag crosses the editor"));
             f.viewport.style.width = `${width}px`;
             f.editor.style.paddingLeft = `${(640 - width) / 10}px`;
             f.root.dispatchEvent(new Event("touchmove", {bubbles: true}));
             await tick();
             tables.forEach(table => reduced(table, "sidebar animation keeps all table windows"));
         }
+        outside.dispatchEvent(new PointerEvent("pointerup", {bubbles: true, pointerType: "mouse"}));
         await new Promise(resolve => setTimeout(resolve, 250));
         await tick();
         check.equal(restores, 0, "outside interactions and viewport resizing do not materialize intrinsic-width tables");
@@ -128,6 +134,26 @@ body {margin:0; --b3-theme-surface-lighter:#ddd; --b3-font-size-editor:16px; --b
         tables.forEach(table => check.equal(table.tBodies[0].rows.length, 1000, "browser find restores every table"));
         outside.dispatchEvent(new KeyboardEvent("keyup", {bubbles: true, key: "f", ctrlKey: true}));
         outside.remove();
+        f.destroy();
+    }
+    {
+        const f = fixture(600);
+        await tick();
+        const cell = f.table.querySelector("tbody td");
+        cell.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, buttons: 1, pointerType: "mouse"}));
+        reduced(f.table);
+        f.editor.dispatchEvent(new PointerEvent("pointermove", {
+            bubbles: true, buttons: 1, pointerType: "mouse", movementX: 10,
+        }));
+        rowsMatch(f.editor.innerHTML, 600);
+        f.editor.dispatchEvent(new PointerEvent("pointercancel", {bubbles: true, pointerType: "mouse"}));
+        f.root.dispatchEvent(new WheelEvent("wheel", {bubbles: true}));
+        await tick();
+        reduced(f.table, "cancelled editor drag can virtualize again");
+        f.editor.dispatchEvent(new PointerEvent("pointermove", {
+            bubbles: true, buttons: 1, pointerType: "mouse", movementX: 10,
+        }));
+        reduced(f.table, "cancelled editor drag does not affect a subsequent external drag");
         f.destroy();
     }
     for (const sizing of ["inline", "theme", "fallback"]) {
@@ -430,7 +456,8 @@ body {margin:0; --b3-theme-surface-lighter:#ddd; --b3-font-size-editor:16px; --b
 
 test("large tables retain complete source, editing, selection, search and layout with bounded rendered rows", {
     skip: process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY,
-    timeout: 60000,
+    // 完整大表序列化和多轮布局需要覆盖全量套件并行运行时的进程预算。
+    timeout: 120000,
 }, async () => {
     const read = (file: string) => readFileSync(path.join(__dirname, file), "utf8");
     const compile = (source: string) => transpileModule(source.replace(/^import [\s\S]*?;\r?\n/gm, "")
@@ -484,7 +511,7 @@ app.whenReady().then(async () => {
     delete env.ELECTRON_RUN_AS_NODE;
     try {
         const result = await promisify(execFile)(require("electron") as unknown as string, [script],
-            {env, timeout: 55000, windowsHide: true});
+            {env, timeout: 115000, windowsHide: true});
         assert.match(result.stdout, /Large table virtualization cases passed/);
     } finally {
         if (path.dirname(path.resolve(temporary)) === path.resolve(tmpdir()) &&

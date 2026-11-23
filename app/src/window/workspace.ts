@@ -234,9 +234,13 @@ export const removeWindowWorkspace = (id: string) => {
     }
     const workspace = getWindowWorkspace(id);
     if (workspace) {
-        confirmDialog(window.siyuan.languages.delete, window.siyuan.languages.windowWorkspaceRemoveTip
-            .replace("${x}", escapeHtml(workspace.name)), () => {
-            void removeWorkspace(id);
+        confirmDialog({
+            title: window.siyuan.languages.delete,
+            text: window.siyuan.languages.windowWorkspaceRemoveTip
+            .replace("${x}", escapeHtml(workspace.name)),
+            confirm: () => {
+                void removeWorkspace(id);
+            },
         });
     }
 };
@@ -319,7 +323,9 @@ const updateWindowWorkspaceButton = () => {
     const disabled = window.siyuan.config.readonly || !!window.siyuan.isPublish;
     button.toggleAttribute("disabled", disabled);
     button.classList.toggle("toolbar__item--disabled", disabled);
-    setTabPosition(true);
+    if (ready) {
+        setTabPosition(true);
+    }
 };
 
 export const onWindowWorkspaceStorageChanged = (key: string) => {

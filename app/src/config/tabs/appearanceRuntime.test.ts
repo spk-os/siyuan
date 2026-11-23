@@ -4,20 +4,31 @@ import {resolve} from "node:path";
 import {test} from "node:test";
 import {runInNewContext} from "node:vm";
 import {ModuleKind, transpileModule} from "typescript";
+import {createSectionRuntime} from "../util/sectionRuntime";
 
 const {parse} = require("ifdef-loader/preprocessor");
 
 for (const mobile of [true, false]) {
-    for (const change of ["gradient", "duplicate", "theme", "initial"] as const) {
+    for (const change of ["gradient", "duplicate", "theme", "initial", "font", "font-reset", "theme-and-font", "compact", "scroll", "pdf", "outline", "mobile-bars", "wallpaper", "floating-dock", "floating-status"] as const) {
         test(`appearance updates preserve gradient controls without skipping theme initialization (${change}, mobile=${mobile})`, async () => {
             const source = readFileSync(resolve(process.cwd(), "src/config/tabs/appearanceRuntime.ts"), "utf8");
             const processed = parse(source, {MOBILE: mobile, BROWSER: true}, false, true);
             const code = transpileModule(processed, {compilerOptions: {module: ModuleKind.CommonJS}}).outputText;
-            const appearance = {lang: "en_US", mode: 0, bodyGradient: {mode: "auto"}};
+            const appearance = {
+                lang: "en_US", mode: 0, bodyGradient: {mode: "auto"},
+                globalFontFamilies: change === "font-reset" ? [{family: "Arial", weight: 700}] : [],
+            };
             const next = change === "initial" ? appearance : {
                 ...appearance,
-                mode: change === "theme" ? 1 : 0,
+                mode: change === "theme" || change === "theme-and-font" ? 1 : 0,
+                compactMode: change === "compact", menuMouseScroll: change === "scroll",
+                pdfTheme: change === "pdf" ? {light: "dark"} : undefined,
+                outlineKeepCurrentExpand: change === "outline", mobileBars: change === "mobile-bars" ? {autoHide: false} : undefined,
+                lockScreenWallpaper: change === "wallpaper" ? true : undefined,
+                showFloatingDockBar: change === "floating-dock" ? false : undefined,
+                showFloatingStatusBar: change === "floating-status" ? true : undefined,
                 bodyGradient: {mode: change === "duplicate" ? "auto" : "custom"},
+                globalFontFamilies: change === "font" || change === "theme-and-font" ? [{family: "Arial", weight: 700}] : [],
             };
             const siyuan = {config: {appearance}};
             const calls: string[] = [];
@@ -28,6 +39,8 @@ for (const mobile of [true, false]) {
                 window: {siyuan},
                 document: {getElementById: (): HTMLElement | null => null},
                 require: (name: string) => {
+                    if (name === "../setting/windowContext") return {isSettingsWindow: () => false};
+                    if (name === "../util/sectionRuntime") return {createSectionRuntime};
                     if (name === "../util/namespaceApi") {
                         return {createConfigNamespaceApi: (options: {setConfig: (data: unknown) => void}) => ({apply: options.setConfig})};
                     }
@@ -36,7 +49,7 @@ for (const mobile of [true, false]) {
                     }
                     if (name === "../../util/assets") {
                         return new Proxy({}, {get: (_, key) => key === "enqueueAppearanceUpdate" ?
-                            (apply: () => Promise<void>) => pending = apply() : () => calls.push(String(key))});
+                            (apply: () => Promise<void>) => pending = apply() : () => { calls.push(String(key)); }});
                     }
                     return new Proxy({}, {get: (_, key) => () => calls.push(String(key))});
                 },
@@ -44,11 +57,21 @@ for (const mobile of [true, false]) {
             moduleExports.appearanceConfigApi.apply(next);
             await pending;
             assert.equal(siyuan.config.appearance, next);
-            const updatesInPlace = change === "gradient" || change === "duplicate";
+            const updatesInPlace = !["initial", "theme", "theme-and-font"].includes(change);
+            assert.equal(calls.includes("syncStatusBarVisibility"), !mobile);
+            assert.equal(calls.includes("syncFloatingDockBarPreference"), change === "floating-dock" && !mobile);
+            assert.equal(calls.includes("syncLockScreenWallpaper"), change === "wallpaper");
             assert.equal(calls.includes("syncBodyGradient"), updatesInPlace);
             assert.equal(calls.includes("setBodyHighlight"), updatesInPlace);
             assert.equal(calls.includes("loadAssets"), !updatesInPlace);
             assert.equal(calls.includes("remountOpenSettingTab"), !updatesInPlace && !mobile);
+            const fontChanged = ["font", "font-reset", "theme-and-font"].includes(change);
+            for (const name of ["setInlineStyle", "refreshHeadingNumberMeasurements", "refreshDynamicIcons", "syncAppearanceFontInputs"]) {
+                assert.equal(calls.includes(name), fontChanged, name);
+            }
+            if (change === "theme-and-font") {
+                assert.ok(calls.indexOf("loadAssets") < calls.indexOf("setInlineStyle"));
+            }
         });
     }
 }
@@ -74,6 +97,7 @@ for (const mobile of [true, false]) {
                 window: {siyuan, location: {reload: () => calls.push("reload")}},
                 document: {getElementById: (): HTMLElement | null => null},
                 require: (name: string) => {
+                    if (name === "../util/sectionRuntime") return {createSectionRuntime};
                     if (name === "../util/namespaceApi") {
                         return {createConfigNamespaceApi: () => ({})};
                     }
@@ -102,11 +126,14 @@ for (const mobile of [true, false]) {
                                     return affected !== "cannot-unload";
                                 };
                             }
-                            return () => calls.push(String(key));
+                            return () => { calls.push(String(key)); };
                         }});
                     }
                     if (name === "../../layout/util") {
-                        return {exportLayout: (options: {cb: () => void}) => options.cb()};
+                        return {reloadUI: () => calls.push("reload")};
+                    }
+                    if (name === "../setting/windowContext") {
+                        return {isSettingsWindow: () => false, closeSettingsWindow: () => false};
                     }
                     return new Proxy({}, {get: (_, key) => () => calls.push(String(key))});
                 },

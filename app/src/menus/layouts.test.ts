@@ -26,6 +26,8 @@ const fixture = (geometryAvailable = true) => {
     }
     let dialog: any;
     const dependencies = {
+        syncMarkdownKeymap: () => {},
+        clearReloadSnapshot: () => {},
         Layout,
         Constants: {LOCAL_LAYOUTS: "layouts", LOCAL_FILESPATHS: "paths",
             SIYUAN_WINDOW_WORKSPACE_GET_OPEN: "siyuan-window-workspace-get-open"},
@@ -37,9 +39,12 @@ const fixture = (geometryAvailable = true) => {
             calls.push({action: url, value});
             callback?.();
         },
+        saveUILayout: (layout: unknown, errorExit?: boolean, callback?: () => void) =>
+            dependencies.fetchPost("/api/system/setUILayout", {layout, ...(errorExit === undefined ? {} : {errorExit})}, callback),
         getAllLayout: () => ({current: true}),
         suspendLayoutSaving: () => util.suspendLayoutSaving(),
         isWindow: () => false,
+        getSettingsWindowHost: (): undefined => undefined,
         getAllEditor: (): unknown[] => [],
         withFetchTimeout: async (callback: () => Promise<void>) => callback(),
         captureWindowGeometry: async () => geometryAvailable ? geometry : undefined,

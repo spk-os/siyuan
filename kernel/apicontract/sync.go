@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package apicontract
 
 import (
@@ -12,6 +16,45 @@ import (
 type SyncEnabledRequest struct {
 	Enabled bool `json:"enabled"`
 }
+
+type CancelSyncCheckoutRequest struct {
+	TaskID string `json:"taskID" api:"trim"`
+}
+
+type CancelSyncCheckoutData struct {
+	Requested bool `json:"requested"`
+}
+
+type SyncCheckoutClientRequest struct {
+	AppID    string `json:"appID" api:"optional"`
+	ClientID string `json:"clientID" api:"optional"`
+}
+
+type ConfirmSyncCheckoutRequest struct {
+	TaskID string `json:"taskID" api:"trim"`
+	Token  string `json:"token" api:"trim"`
+	Saved  bool   `json:"saved"`
+}
+
+type SyncCheckoutState struct {
+	TaskID        string   `json:"taskID"`
+	Revision      int64    `json:"revision"`
+	Phase         string   `json:"phase"`
+	Blocking      bool     `json:"blocking"`
+	Canceling     bool     `json:"canceling"`
+	Current       int64    `json:"current"`
+	Total         int64    `json:"total"`
+	Message       string   `json:"message"`
+	Token         string   `json:"token"`
+	UpsertRootIDs []string `json:"upsertRootIDs" api:"nonnullable"`
+	RemoveRootIDs []string `json:"removeRootIDs" api:"nonnullable"`
+}
+
+type SyncCheckoutSnapshot struct {
+	KernelID string             `json:"kernelID"`
+	Revision int64              `json:"revision"`
+	Task     *SyncCheckoutState `json:"task"`
+}
 type SyncIntervalRequest struct {
 	Interval float64 `json:"interval"`
 }
@@ -23,6 +66,46 @@ type SyncProviderRequest struct {
 	// 显式确认后补齐原来源的资源和历史快照，缺省时只检查完整性。
 	CompleteAssets bool `json:"completeAssets" api:"optional,nullable"`
 }
+
+type ClearSyncProviderConfigRequest struct {
+	Provider int `json:"provider"`
+}
+
+type SyncProviderConfigRulesRequest struct {
+	Provider int    `json:"provider"`
+	Endpoint string `json:"endpoint" api:"optional"`
+	Bucket   string `json:"bucket" api:"optional"`
+}
+
+type SyncProviderConfigRulesData struct {
+	RequiredFields        []string `json:"requiredFields" api:"nonnullable"`
+	EndpointBucketWarning bool     `json:"endpointBucketWarning"`
+}
+
+type TestSyncProviderS3Request struct {
+	S3 SyncS3 `json:"s3"`
+}
+
+type TestSyncProviderS3Data struct {
+	Kind string `json:"kind"`
+	Msg  string `json:"msg"`
+}
+
+type TestSyncProviderWebDAVRequest struct {
+	WebDAV    SyncWebDAV `json:"webdav"`
+	CloudName string     `json:"cloudName" api:"optional"`
+}
+
+type TestSyncProviderLocalRequest struct {
+	Local SyncLocal `json:"local"`
+}
+
+type ClearSyncProviderConfigData struct {
+	Enabled bool        `json:"enabled"`
+	S3      *SyncS3     `json:"s3,omitempty"`
+	WebDAV  *SyncWebDAV `json:"webdav,omitempty"`
+	Local   *SyncLocal  `json:"local,omitempty"`
+}
 type SyncNameRequest struct {
 	Name string `json:"name" api:"trim"`
 }
@@ -30,9 +113,26 @@ type SyncLANRequest struct {
 	Enabled           bool    `json:"enabled"`
 	MaxConcurrentReqs float64 `json:"maxConcurrentReqs" api:"optional,nullable"`
 }
+type SyncSourceState struct {
+	Pending        bool   `json:"pending"`
+	Source         string `json:"source"`
+	LocalID        string `json:"localID"`
+	CloudID        string `json:"cloudID"`
+	LocalFiles     int    `json:"localFiles"`
+	CloudFiles     int    `json:"cloudFiles"`
+	CloudCreated   int64  `json:"cloudCreated"`
+	CloudDevice    string `json:"cloudDevice"`
+	UploadFiles    int    `json:"uploadFiles"`
+	OverwriteFiles int    `json:"overwriteFiles"`
+	RemoveFiles    int    `json:"removeFiles"`
+}
+
 type PerformSyncRequest struct {
-	MobileSwitch bool `json:"mobileSwitch" api:"optional,nullable"`
-	Upload       bool `json:"upload" api:"optional"`
+	MobileSwitch bool   `json:"mobileSwitch" api:"optional,nullable"`
+	Upload       bool   `json:"upload" api:"optional"`
+	Source       string `json:"source" api:"optional"`
+	LocalID      string `json:"localID" api:"optional"`
+	CloudID      string `json:"cloudID" api:"optional"`
 	uploadFields map[string]json.RawMessage
 }
 
@@ -230,6 +330,15 @@ func init() {
 		r.uploadFields, err = syncRequestFields(reader, PerformSync.definition.Path)
 		if err == nil {
 			r.MobileSwitch, err = legacyField[bool](r.uploadFields, "mobileSwitch", "Boolean", false)
+		}
+		if err == nil {
+			r.Source, err = legacyField[string](r.uploadFields, "source", "String", false)
+		}
+		if err == nil && r.Source != "" {
+			r.LocalID, err = legacyField[string](r.uploadFields, "localID", "String", true)
+		}
+		if err == nil && r.Source != "" {
+			r.CloudID, err = legacyField[string](r.uploadFields, "cloudID", "String", true)
 		}
 		return r, err
 	}

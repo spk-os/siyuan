@@ -1,0 +1,400 @@
+import * as assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import {join} from "node:path";
+import test from "node:test";
+import {runInNewContext} from "node:vm";
+import {
+    createSourceFile, forEachChild, isMethodDeclaration, ModuleKind, ScriptTarget, transpileModule,
+} from "typescript";
+import * as scrollRequest from "../protyle/scroll/scrollRequest";
+
+const constants = {
+    LOCAL_FILEPOSITION: "positions", CB_GET_SCROLL: "scroll", CB_GET_HL: "highlight", CB_GET_ALL: "all",
+    CUSTOM_SY_RESTORE_DOC_POSITION: "custom-sy-restore-doc-position", CB_GET_ROOTSCROLL: "root-scroll", CB_GET_SETID: "set-id", CB_GET_FOCUS: "focus", SIZE_GET_MAX: 100000,
+};
+const read = (file: string) => readFileSync(join(__dirname, file), "utf8");
+const compile = (source: string) => transpileModule(source, {
+    compilerOptions: {module: ModuleKind.CommonJS, target: ScriptTarget.ES2021},
+}).outputText;
+const loaderSource = compile(read("editor.ts"));
+const scrollSource = compile(read("../protyle/scroll/saveScroll.ts"));
+
+// 执行构造器实际的恢复分支，避免替身自行读取页签参数而掩盖调用链中的参数遗漏。
+const protyleSource = createSourceFile("index.ts", read("../protyle/index.ts"), ScriptTarget.ES2021, true);
+let restoreSource: string;
+let getDocSource: string;
+const findRestore = (node: import("typescript").Node) => {
+    if (isMethodDeclaration(node) && node.name.getText(protyleSource) === "loadInitialDoc") {
+        restoreSource = node.body.getText(protyleSource).slice(1, -1);
+    }
+    if (isMethodDeclaration(node) && node.name.getText(protyleSource) === "getDoc") {
+        getDocSource = `exports.getDoc = function (${node.parameters.map(item => item.getText(protyleSource)).join(",")}) ` +
+            node.body.getText(protyleSource);
+    }
+    forEachChild(node, findRestore);
+};
+findRestore(protyleSource);
+assert.ok(restoreSource);
+assert.ok(getDocSource);
+const constructorSource = compile(`exports.restore = async function (options, mergedOptions) {${restoreSource}};\n${getDocSource}`);
+const clone = <T>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
+const position = (scrollTop: number, extra: Partial<IScrollAttr> = {}): IScrollAttr => ({
+    rootId: "root", startId: "first", endId: "last", scrollTop, ...extra,
+});
+
+const setup = (legacy?: IScrollAttr, encrypted = false) => {
+    const notebookID = encrypted ? "encrypted-box" : "box";
+    const requests: Array<{url: string, data: any}> = [];
+    const rendered: Array<{scrollAttr?: IScrollAttr}> = [];
+    const constructed: IProtyleOptions[] = [];
+    const presentation: string[] = [];
+    const attributes: Array<(ready: boolean) => void> = [];
+    const docAttrs: Record<string, string> = {};
+    let pendingAttrs: Promise<void>;
+    let releaseAttrs: () => void;
+    const toolbar = {value: "Document"};
+    const bottomBacklink = {close: (): Promise<void> | undefined => undefined, updates: 0};
+    let clearedSearchHighlights = 0;
+    const window: any = {siyuan: {
+        storage: {positions: {root: clone(legacy)}},
+        config: {editor: {dynamicLoadBlocks: 128, databaseAttrShow: true}, fileTree: {}}, mobile: {},
+        languages: {settingsPendingSaveError: "Save failed"},
+    }};
+    const document = {querySelector: (): null => null,
+        getElementById: (id: string) => id === "toolbarName" ? toolbar : {}};
+    const noop = () => {};
+    const makeProtyle = (options: IProtyleOptions) => ({
+        element: {querySelector: (): null => null, classList: {remove: noop}},
+        options: {mode: "wysiwyg"}, notebookId: options.notebookId, path: "/root.sy",
+        block: {id: options.blockId, rootID: options.rootId},
+        title: {element: {removeAttribute: () => presentation.push("title")}},
+        databaseAttributePanel: {},
+        contentElement: {scrollTop: 0, classList: {contains: () => false}},
+        wysiwyg: {element: {querySelectorAll: (): Element[] => [], childElementCount: 1}},
+        undo: {clear: () => presentation.push("undo")},
+    });
+    const fetchPost = (url: string, data: any, callback?: (response: any) => void) => {
+        requests.push({url, data: clone(data)});
+        callback?.({code: 0, data: {id: data.id, rootID: "root", box: notebookID}});
+        return Promise.resolve();
+    };
+    const onGet = (options: any) => {
+        presentation.push("document");
+        rendered.push({scrollAttr: clone(options.scrollAttr)});
+        options.protyle.contentElement.scrollTop = options.scrollAttr?.scrollTop ?? 0;
+        options.afterCB?.();
+    };
+    const execute = (source: string, modules: Record<string, unknown>, globals: Record<string, unknown> = {}) => {
+        const api: any = {};
+        runInNewContext(source, {exports: api, require: (name: string) => modules[name] || {},
+            window, document, console, ...globals});
+        return api;
+    };
+    const docPosition = execute(compile(read("../protyle/scroll/docPosition.ts")), {
+        "../../constants": {Constants: constants},
+        "../../util/fetch": {fetchSyncPost: async () => { await pendingAttrs; return {code: 0, data: docAttrs}; }},
+    });
+    const scroll = execute(scrollSource, {
+        "../../constants": {Constants: constants},
+        "../../util/fetch": {fetchPost},
+        "../../util/pathName": {isEncryptedBox: (id: string) => id === "encrypted-box"},
+        "../util/onGet": {onGet},
+        "../render/searchMarkRender": {isSupportCSSHL: () => true},
+        "./scrollRequest": scrollRequest,
+    });
+    const constructor = execute(constructorSource, {}, {
+        ...docPosition, Constants: constants, getDocByScroll: scroll.getDocByScroll,
+        fetchPost, onGet, isEncryptedBox: (id: string) => id === "encrypted-box",
+    });
+    class Protyle {
+        protyle: ReturnType<typeof makeProtyle>;
+        constructor(_app: unknown, _element: unknown, options: IProtyleOptions) {
+            constructed.push(options);
+            this.protyle = makeProtyle(options);
+            // 与实际异步加载一样，等主编辑器安装后再通知打开完成。
+            queueMicrotask(() => constructor.restore.call(this, options, options));
+        }
+        afterOnGet(options: IProtyleOptions) {
+            options.after(this as any);
+        }
+        getDoc(options: IProtyleOptions) {
+            constructor.getDoc.call(this, options);
+        }
+    }
+    const loader = execute(loaderSource, {
+        "../constants": {Constants: constants},
+        "../protyle/scroll/docPosition": docPosition,
+        "../protyle": {Protyle},
+        "../util/fetch": {fetchPost},
+        "../util/pathName": {isEncryptedBox: (id: string) => id === "encrypted-box"},
+        "../protyle/util/onGet": {onGet},
+        "../dialog/message": {showMessage: noop},
+        "../protyle/scroll/saveScroll": {getDocByScroll: scroll.getDocByScroll, saveScroll: noop},
+        "../protyle/ui/hideElements": {hideElements: noop},
+        "../protyle/ui/initUI": {addLoading: () => presentation.push("loading")},
+        "../protyle/render/av/attributePanel": {prepareDatabaseAttributePanel: () => new Promise(resolve => {
+            attributes.push(ready => resolve(ready ? () => presentation.push("attributes") : undefined));
+        })},
+        "../protyle/util/trackedRange": {invalidateTrackedRanges: noop},
+        "../protyle/undo/globalUndo": {initMirror: noop},
+        "../protyle/render/av/cellEditor": {closeAVCellEditor: noop},
+        "../protyle/render/av/databaseRowNavigation": execute(compile(read("../protyle/render/av/databaseRowNavigation.ts")), {}),
+        "../plugin/EventBusCore": {forEachPluginSubscriber: noop},
+        "./util/setEmpty": {setEditor: (visible = true) => presentation.push(visible ? "show" : "hide")},
+        "./util/closePanel": {closePanel: noop},
+        "./util/mobileBars": {bindMobileBarsScroll: noop},
+        "./util/mobileTopBar": {restoreMobileTopBarLayout: noop},
+        "./util/MobileEditorDialog": {closeMobileEditorSheets: noop},
+        "./util/openReference": {invalidateMobileReferenceOpen: noop},
+        "./menu/searchHighlight": {clearMobileSearchHighlight: () => { clearedSearchHighlights++; }},
+        "./util/bottomBacklink": {closeMobileBottomBacklinkPanel: () => bottomBacklink.close(),
+            updateMobileBottomBacklinkPanel: () => { bottomBacklink.updates++; return Promise.resolve(); }},
+    });
+    const load = (scrollAttr?: IScrollAttr, isValid = () => true) => new Promise<any>((resolve, reject) => {
+        loader.loadMobileFileById({}, "root", [constants.CB_GET_SCROLL], undefined, notebookID, resolve,
+            true, isValid, undefined, scrollAttr, false, () => reject(new Error("Loading failed")));
+    });
+    const switchRow = (id: string, isValid = () => true) => new Promise<boolean>(resolve => {
+        loader.loadMobileFileById({}, id, [constants.CB_GET_ALL, constants.CB_GET_FOCUS], undefined, notebookID,
+            () => resolve(true), true, isValid, undefined, undefined, false,
+            (_invalid: boolean, unchanged: boolean) => {
+                assert.equal(unchanged, true);
+                resolve(false);
+            }, false, true);
+    });
+    const loadDesktop = async (scrollAttr?: IScrollAttr, blockId = "root", action = [constants.CB_GET_SCROLL], destroyed = false) => {
+        const options = {scrollAttr, rootId: "root", blockId, action};
+        const protyle = makeProtyle(options as IProtyleOptions);
+        await constructor.restore.call({protyle, destroyed, afterOnGet: noop,
+            getDoc: (value: IProtyleOptions) => constructor.getDoc.call({protyle, afterOnGet: noop}, value)}, options, options);
+    };
+    return {docAttrs, load, loadDesktop, switchRow, requests, rendered, constructed, window, presentation, attributes, bottomBacklink,
+        pauseAttrs: () => { pendingAttrs = new Promise<void>(resolve => { releaseAttrs = resolve; }); },
+        releaseAttrs: () => releaseAttrs(),
+        get clearedSearchHighlights() { return clearedSearchHighlights; },
+        get docRequest() { return requests.filter(item => item.url === "/api/filetree/getDoc").at(-1)?.data; }};
+};
+
+test("disabling document position restoration starts cold and reused mobile editors at the top", async () => {
+    const state = setup(position(8000));
+    state.window.siyuan.config.fileTree.restoreDocPosition = false;
+    const protyle = await state.load();
+    assert.equal(protyle.contentElement.scrollTop, 0);
+    assert.equal(state.rendered[0].scrollAttr, undefined);
+    assert.equal(state.docRequest.startID, undefined);
+    assert.equal(await state.load(), protyle);
+    assert.equal(state.rendered[1].scrollAttr, undefined);
+    assert.equal(state.window.siyuan.storage.positions.root.scrollTop, 8000);
+});
+
+test("explicit mobile tab positions still restore when ordinary restoration is disabled", async () => {
+    const state = setup(position(8000));
+    state.window.siyuan.config.fileTree.restoreDocPosition = false;
+    const scroll = position(240, {zoomInId: "zoomed-block"});
+    const protyle = await state.load(scroll);
+    assert.equal(protyle.contentElement.scrollTop, 240);
+    await state.load(scroll);
+    assert.deepEqual(state.rendered.map(item => item.scrollAttr), [scroll, scroll]);
+    assert.equal(state.docRequest.id, "zoomed-block");
+});
+
+test("desktop ordinary reopening honors the preference and explicit targets retain priority", async () => {
+    const state = setup(position(8000));
+    await state.loadDesktop();
+    assert.equal(state.rendered.at(-1).scrollAttr.scrollTop, 8000);
+    state.window.siyuan.config.fileTree.restoreDocPosition = false;
+    await state.loadDesktop();
+    assert.equal(state.rendered.at(-1).scrollAttr, undefined);
+    assert.equal(state.docRequest.id, "root");
+    assert.equal(state.docRequest.startID, undefined);
+    const scroll = position(240);
+    await state.loadDesktop(scroll);
+    assert.deepEqual(state.rendered.at(-1).scrollAttr, scroll);
+    for (const restore of [true, false]) {
+        state.window.siyuan.config.fileTree.restoreDocPosition = restore;
+        await state.loadDesktop(undefined, "target-block", [constants.CB_GET_ROOTSCROLL, constants.CB_GET_HL]);
+        assert.equal(state.docRequest.id, "target-block");
+        assert.equal(state.rendered.at(-1).scrollAttr, undefined);
+    }
+});
+
+for (const global of [true, false]) {
+    for (const custom of ["true", "false", "", "unknown"]) {
+        test(`document opening position overrides global ${global} with ${custom || "default"} on desktop and mobile`, async () => {
+            const state = setup(position(8000), true);
+            state.window.siyuan.config.fileTree.restoreDocPosition = global;
+            state.docAttrs[constants.CUSTOM_SY_RESTORE_DOC_POSITION] = custom;
+            const expected = custom === "true" || (custom !== "false" && global) ? 8000 : 0;
+            await state.loadDesktop();
+            assert.equal(state.rendered.at(-1).scrollAttr?.scrollTop || 0, expected);
+            const protyle = await state.load();
+            assert.equal(protyle.contentElement.scrollTop, expected);
+            await state.load();
+            assert.equal(state.rendered.at(-1).scrollAttr?.scrollTop || 0, expected);
+            await state.load(position(240));
+            assert.equal(state.rendered.at(-1).scrollAttr.scrollTop, 240);
+            assert.equal(state.window.siyuan.storage.positions.root.scrollTop, 8000);
+        });
+    }
+}
+
+test("a superseded mobile switch and a destroyed desktop editor ignore late document preferences", async () => {
+    const state = setup(position(8000));
+    await state.load();
+    state.requests.length = 0;
+    state.rendered.length = 0;
+    state.pauseAttrs();
+    let valid = true;
+    const pending = state.load(undefined, () => valid);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    valid = false;
+    state.releaseAttrs();
+    await assert.rejects(pending, /Loading failed/);
+    assert.equal(state.rendered.length, 0);
+    assert.equal(state.requests.some(item => item.url === "/api/filetree/getDoc"), false);
+    await state.loadDesktop(undefined, "root", [constants.CB_GET_SCROLL], true);
+    assert.equal(state.rendered.length, 0);
+});
+
+test("mobile document loading waits for bottom backlink input before reusing the editor", async () => {
+    const state = setup();
+    let saved: () => void;
+    const pending = new Promise<void>(resolve => { saved = resolve; });
+    state.bottomBacklink.close = () => pending;
+    const loading = state.load();
+    assert.equal(state.clearedSearchHighlights, 1);
+    assert.equal(state.requests.length, 0);
+    state.bottomBacklink.close = () => undefined;
+    saved();
+    await loading;
+    assert.ok(state.requests.length > 0);
+    assert.equal(state.bottomBacklink.updates, 1);
+});
+
+test("cold mobile loading restores the tab's top instead of the document's old bottom", async () => {
+    const state = setup(position(8000, {startId: "old-first", endId: "old-last"}));
+    const scroll = position(0);
+    const protyle = await state.load(scroll);
+    assert.equal(protyle.contentElement.scrollTop, 0);
+    assert.deepEqual(state.rendered[0].scrollAttr, scroll);
+    assert.equal(state.constructed[0].scrollAttr, scroll);
+    assert.equal(state.docRequest.startID, "first");
+    assert.equal(state.docRequest.endID, "last");
+    assert.equal(state.window.siyuan.storage.positions.root.scrollTop, 8000);
+});
+
+test("mobile document reuse preserves the old owner until the rich title source is saved", async () => {
+    const state = setup();
+    const protyle = await state.load();
+    protyle.notebookId = "old-box";
+    let accept: () => void;
+    const pending = new Promise<void>(resolve => { accept = resolve; });
+    protyle.title.prepareForDocumentSwitch = () => pending;
+    state.presentation.length = 0;
+    const loading = state.load();
+    assert.equal(protyle.notebookId, "old-box");
+    assert.deepEqual(state.presentation, []);
+    accept();
+    assert.equal(await loading, protyle);
+    assert.equal(protyle.notebookId, "box");
+    assert.ok(state.presentation.includes("document"));
+});
+
+test("mobile failed title save retains the current document without hiding or reusing it", async () => {
+    const state = setup();
+    const protyle = await state.load();
+    protyle.notebookId = "old-box";
+    protyle.title.prepareForDocumentSwitch = async () => { throw new Error("Conflict"); };
+    state.presentation.length = 0;
+    await assert.rejects(state.load(), /Loading failed/);
+    assert.equal(protyle.notebookId, "old-box");
+    assert.deepEqual(state.presentation, []);
+});
+
+test("cold and reused mobile editors forward each tab's full saved range and focus", async () => {
+    const state = setup(position(8000));
+    const first = position(240, {focusId: "paragraph", focusStart: 2, focusEnd: 5});
+    const second = position(680, {startId: "second-first", endId: "second-last", focusId: "other", focusStart: 7, focusEnd: 7});
+    const protyle = await state.load(first);
+    assert.equal(protyle.contentElement.scrollTop, 240);
+    assert.deepEqual(state.rendered[0].scrollAttr, first);
+    assert.equal(await state.load(second), protyle);
+    assert.equal(protyle.contentElement.scrollTop, 680);
+    assert.deepEqual(state.rendered[1].scrollAttr, second);
+    assert.equal(state.docRequest.startID, "second-first");
+    assert.equal(state.docRequest.endID, "second-last");
+    assert.equal(state.constructed.length, 1);
+});
+
+test("cold mobile loading restores a zoomed block from the tab snapshot", async () => {
+    const state = setup(position(8000));
+    const scroll = position(72, {zoomInId: "zoomed-block"});
+    await state.load(scroll);
+    assert.equal(state.docRequest.id, "zoomed-block");
+    assert.equal(state.docRequest.size, constants.SIZE_GET_MAX);
+    assert.deepEqual(state.rendered[0].scrollAttr, scroll);
+});
+
+test("cold mobile loading falls back to the document position without a matching tab snapshot", async () => {
+    for (const scroll of [undefined, position(0, {rootId: "different-document"})]) {
+        const legacy = position(8000, {startId: "legacy-first", endId: "legacy-last"});
+        const state = setup(legacy);
+        const protyle = await state.load(scroll);
+        assert.equal(protyle.contentElement.scrollTop, 8000);
+        assert.deepEqual(state.rendered[0].scrollAttr, legacy);
+        assert.equal(state.docRequest.startID, "legacy-first");
+        assert.equal(state.docRequest.endID, "legacy-last");
+    }
+});
+
+test("cold mobile loading without either saved position uses normal document loading", async () => {
+    const state = setup();
+    await state.load();
+    assert.equal(state.rendered[0].scrollAttr, undefined);
+    assert.equal(state.docRequest.id, "root");
+    assert.equal(state.docRequest.startID, undefined);
+    assert.equal(state.docRequest.endID, undefined);
+});
+
+test("explicit mobile scroll restoration retains encrypted notebook request scoping", async () => {
+    const state = setup(undefined, true);
+    const scroll = position(120);
+    await state.load(scroll);
+    assert.equal(state.requests.find(item => item.url === "/api/block/getBlockInfo").data.notebook, "encrypted-box");
+    assert.equal(state.docRequest.notebook, "encrypted-box");
+    assert.deepEqual(state.rendered[0].scrollAttr, scroll);
+});
+
+test("mobile bound navigation preserves the visible document until attributes are ready", async () => {
+    const state = setup(undefined, true);
+    const protyle = await state.load();
+    protyle.contentElement.scrollTop = 456;
+    state.presentation.length = 0;
+    const switching = state.switchRow("bound");
+    assert.deepEqual(state.presentation, []);
+    assert.equal(protyle.contentElement.scrollTop, 456);
+    assert.equal(state.docRequest.notebook, "encrypted-box");
+    state.attributes[0](true);
+    assert.equal(await switching, true);
+    assert.deepEqual(state.presentation, ["attributes", "title", "undo", "document", "show"]);
+});
+
+test("mobile failed or superseded attribute preparation cannot replace the current document", async () => {
+    const state = setup();
+    await state.load();
+    state.presentation.length = 0;
+    const failed = state.switchRow("missing");
+    state.attributes[0](false);
+    assert.equal(await failed, false);
+    assert.deepEqual(state.presentation, []);
+    let valid = true;
+    const stale = state.switchRow("stale", () => valid);
+    valid = false;
+    const latest = state.switchRow("latest");
+    state.attributes[2](true);
+    assert.equal(await latest, true);
+    const committed = [...state.presentation];
+    state.attributes[1](true);
+    assert.equal(await stale, false);
+    assert.deepEqual(state.presentation, committed);
+});

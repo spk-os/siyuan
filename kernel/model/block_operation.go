@@ -1,10 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
@@ -29,8 +25,8 @@ func PerformBlockOperation(operation *Operation) (transactions []*Transaction, e
 	}
 
 	switch operation.Action {
-	case "appendInsert", "insert":
-		if operation.Action == "appendInsert" || operation.PreviousID == "" && operation.NextID == "" {
+	case "appendInsert", "prependInsert", "insert":
+		if operation.Action != "insert" || operation.PreviousID == "" && operation.NextID == "" {
 			if err = treenode.CheckContainerParent(operation.ParentID); err != nil {
 				return nil, err
 			}
@@ -52,9 +48,20 @@ func PerformBlockOperation(operation *Operation) (transactions []*Transaction, e
 		return nil, fmt.Errorf("unsupported block operation [%s]", operation.Action)
 	}
 
-	tx := &Transaction{DoOperations: []*Operation{operation}}
+	tx := &Transaction{DoOperations: []*Operation{operation}, fromAPI: true}
 	if err = performTxSyncLocked(tx); err != nil {
 		return nil, err
 	}
 	return []*Transaction{tx}, nil
+}
+
+// PerformBlockTransactions 为外部批量块写入启用收集事件，并返回实际提交错误。
+func PerformBlockTransactions(transactions []*Transaction) error {
+	for _, tx := range transactions {
+		tx.fromAPI = true
+		if err := PerformTxSync(tx); err != nil {
+			return err
+		}
+	}
+	return nil
 }

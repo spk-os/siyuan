@@ -1,3 +1,4 @@
+import {getDocTreeItem} from "../layout/dock/docTree/rowData";
 /// #if !MOBILE
 import {getInstanceById, setPanelFocus} from "../layout/util";
 import {Tab} from "../layout/Tab";
@@ -12,17 +13,20 @@ import {initTabMenu} from "./tab";
 import {ipcRenderer} from "electron";
 /// #endif
 import {Menu} from "./Menu";
-import {hasClosestByClassName, hasTopClosestByTag} from "../protyle/util/hasClosest";
+import {hasClosestByClassName} from "../protyle/util/hasClosest";
+import {getDocTreeMenuItems} from "./navigationSelection";
 import type {App} from "../index";
 import {Constants} from "../constants";
 import {textMenu} from "./text";
 import {hideTooltip} from "../dialog/tooltip";
+import {bindTouchMenuDismiss} from "./menuClick";
 
 export class Menus {
     public menu: Menu;
 
     constructor(app: App) {
         this.menu = new Menu();
+        bindTouchMenuDismiss();
         /// #if !MOBILE
         window.addEventListener("contextmenu", (event) => {
             if (event.shiftKey) {
@@ -102,7 +106,7 @@ export class Menus {
                     this.unselect();
                     const rect = target.getBoundingClientRect();
                     // navigation 文件上：删除/重命名/打开文件位置/导出
-                    initFileMenu(app, this.getDir(target), target.getAttribute("data-path"), target).popup({
+                    initFileMenu(app, this.getDir(target), getDocTreeItem(target)?.path, target).popup({
                         x: event.clientX,
                         y: rect.bottom,
                         h: rect.height,
@@ -152,10 +156,7 @@ export class Menus {
     }
 
     private getDir(target: HTMLElement) {
-        const rootElement = hasTopClosestByTag(target, "UL");
-        if (rootElement) {
-            return rootElement.getAttribute("data-url");
-        }
+        return getDocTreeMenuItems([target])[0]?.notebookId;
     }
 
     private unselect() {

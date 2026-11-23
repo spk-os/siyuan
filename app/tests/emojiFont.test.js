@@ -28,14 +28,18 @@ const runElectron = async () => {
         const characters = [...sequences, ...oldSequences].map(sequence => String.fromCodePoint(...sequence.split("-").map(value => parseInt(value, 16))));
         win.webContents.debugger.attach("1.3");
         const command = (method, params) => win.webContents.debugger.sendCommand(method, params);
-        for (const platform of ["apple", "windows11", "other"]) {
+        const started = Date.now();
+        for (const platform of ["apple", "windows11", "windows", "other"]) {
+            console.log(`Emoji ${platform}: started at ${Date.now() - started}ms`);
             // 从导出目录加载真实 WOFF2，确保字体声明及相对路径能在离线页面使用。
             const html = `<html><meta charset="utf-8"><style>${getEmojiFontStyle(platform, "")}
 body { background: white; }
 .emoji { display: inline-block; font-size: 32px; margin: 3px; font-family: "Emojis Additional", "Emojis"; }
 .text { font-family: "Emojis Additional", "Emojis Reset", Arial, "Emojis"; }
+.tree { font-family: "Emojis File Tree", "Emojis Additional", "Emojis"; }
 </style><body>${characters.map((char, index) => `<span id="emoji-${index}" class="emoji">${char}</span>`).join("")}
 <hr>${characters.map((char, index) => `<span id="text-${index}" class="emoji text">${char}</span>`).join("")}
+<hr>${characters.map((char, index) => `<span id="tree-${index}" class="emoji tree">${char}</span>`).join("")}
 ${characters.map((char, index) => `<span id="native-${index}" style='font-family:"Emojis"'>${char}</span>`).join("")}</body></html>`;
             const htmlPath = path.join(profile, `${platform}.html`);
             writeFileSync(htmlPath, html);
@@ -44,13 +48,13 @@ ${characters.map((char, index) => `<span id="native-${index}" style='font-family
             await command("CSS.enable");
             await win.webContents.executeJavaScript("document.fonts.ready.then(() => true)");
             const {root} = await command("DOM.getDocument");
-            for (const context of ["emoji", "text"]) {
+            for (const context of ["emoji", "text", "tree"]) {
                 for (let index = 0; index < characters.length; index++) {
                     const {nodeId} = await command("DOM.querySelector", {nodeId: root.nodeId, selector: `#${context}-${index}`});
                     const {fonts} = await command("CSS.getPlatformFontsForNode", {nodeId});
                     const label = `${platform}/${context}: ${[...sequences, ...oldSequences][index]}`;
                     const glyphCount = fonts.reduce((count, font) => count + font.glyphCount, 0);
-                    if (index < sequences.length || platform === "other") {
+                    if (index < sequences.length || platform === "other" || platform === "windows") {
                         assert.equal(glyphCount, 1, `${label}: ${JSON.stringify(fonts)}`);
                         assert.ok(fonts.every(font => font.isCustomFont), `${label}: ${JSON.stringify(fonts)}`);
                     } else {
@@ -62,9 +66,11 @@ ${characters.map((char, index) => `<span id="native-${index}" style='font-family
                     }
                 }
             }
+            console.log(`Emoji ${platform}: glyphs verified at ${Date.now() - started}ms`);
             const pdf = await win.webContents.printToPDF({printBackground: true});
             assert.equal(pdf.subarray(0, 4).toString(), "%PDF");
             assert.ok(pdf.length > 10000);
+            console.log(`Emoji ${platform}: PDF verified at ${Date.now() - started}ms`);
             if (process.env.SIYUAN_EMOJI_TEST_ARTIFACTS) {
                 const artifacts = path.resolve(process.env.SIYUAN_EMOJI_TEST_ARTIFACTS);
                 mkdirSync(artifacts, {recursive: true});
@@ -90,14 +96,14 @@ if (process.versions.electron && process.type === "browser") {
 } else {
     require("node:test").it("renders Unicode 17 sequences and existing emoji with platform and offline export styles", {
         skip: process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY,
-        timeout: 90000,
+        timeout: 150000,
     }, async () => {
         const env = {...process.env};
         delete env.ELECTRON_RUN_AS_NODE;
         const profile = mkdtempSync(path.join(os.tmpdir(), "siyuan-emoji-font-"));
         try {
             const {stdout} = await require("node:util").promisify(require("node:child_process").execFile)(
-                require("electron"), [__filename, profile], {env, windowsHide: true, timeout: 85000});
+                require("electron"), [__filename, profile], {env, windowsHide: true, timeout: 140000});
             assert.match(stdout, /Unicode 17 emoji rendering cases passed/);
         } finally {
             assert.equal(path.dirname(path.resolve(profile)), path.resolve(os.tmpdir()));

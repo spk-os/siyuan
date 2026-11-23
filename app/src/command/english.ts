@@ -1,5 +1,5 @@
-let englishLanguages: Record<string, string> | undefined;
-let englishLanguagesPromise: Promise<Record<string, string> | undefined> | undefined;
+let englishLanguages: ILanguages | undefined;
+let englishLanguagesPromise: Promise<ILanguages | undefined> | undefined;
 
 export const getEnglishCommandLabel = (key: string) => englishLanguages?.[key];
 
@@ -16,7 +16,7 @@ export const requestEnglishCommandTranslations = async (
 
 export const initializeEnglishCommandTranslations = (
     currentLanguage: string,
-    currentLanguages: Record<string, string>,
+    currentLanguages: ILanguages,
     version: string,
 ) => {
     if (currentLanguage === "en") {
@@ -29,7 +29,7 @@ export const initializeEnglishCommandTranslations = (
                 englishLanguages = languages;
                 return languages;
             })
-            .catch(error => {
+            .catch((error): undefined => {
                 console.warn("Unable to load English command translations:", error);
                 return undefined;
             });

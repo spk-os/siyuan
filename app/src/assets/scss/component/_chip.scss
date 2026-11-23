@@ -110,7 +110,7 @@
     box-shadow: inset -2px 0 0 0 var(--b3-theme-primary-lighter);
   }
 
-  svg:not(.b3-chip__close) {
+  > svg:not(.b3-chip__close) {
     margin-right: 6px;
     margin-left: -5px;
     height: 16px;
@@ -129,10 +129,25 @@
     flex-shrink: 0;
     padding: 2px;
 
-    &:hover {
+    &:hover:not([disabled]) {
       // 不明原因 https://github.com/siyuan-note/siyuan/issues/7756#issuecomment-1484057954
       opacity: .99;
       background-color: var(--b3-list-icon-hover);
+    }
+
+    &:focus {
+      outline: none;
+    }
+
+    &:focus-visible:not([disabled]) {
+      opacity: 1;
+      outline: 1px solid var(--b3-theme-primary);
+      outline-offset: -1px;
+    }
+
+    &[disabled] {
+      opacity: .38;
+      cursor: not-allowed;
     }
   }
 
@@ -144,7 +159,7 @@
       margin-left: 3px;
     }
 
-    svg:not(.b3-chip__close) {
+    > svg:not(.b3-chip__close) {
       margin-right: 3px;
       margin-left: -2px;
     }

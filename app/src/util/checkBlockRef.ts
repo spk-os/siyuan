@@ -1,6 +1,6 @@
 import {confirmDialog} from "../dialog/confirmDialog";
 import {showMessage} from "../dialog/message";
-import {progressLoading} from "../dialog/processSystem";
+import {progressLoading} from "../dialog/progress";
 import {waitForPendingTransactions} from "../protyle/util/transactionQueue";
 import {fetchSyncPost} from "./fetch";
 
@@ -74,8 +74,13 @@ export const confirmBlockRef = async (options: IBlockRefCheckOptions, protyle?: 
             return true;
         }
         return await new Promise<boolean>((resolve) => {
-            confirmDialog(window.siyuan.languages.deleteOpConfirm, window.siyuan.languages.deleteRefConfirm,
-                () => resolve(true), () => resolve(false), true);
+            confirmDialog({
+                title: window.siyuan.languages.deleteOpConfirm,
+                text: window.siyuan.languages.deleteRefConfirm,
+                confirm: () => resolve(true),
+                cancel: () => resolve(false),
+                isDelete: true,
+            });
         });
     } finally {
         if (protyle) {

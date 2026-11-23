@@ -3,6 +3,7 @@ import test from "node:test";
 import {readFileSync} from "node:fs";
 import {join} from "node:path";
 import {createSourceFile, forEachChild, isCallExpression, ScriptTarget, transpileModule} from "typescript";
+const {loadMenuToggle} = require("../../../tests/menu-toggle-fixture.cjs");
 
 const source = createSourceFile("index.ts", readFileSync(join(__dirname, "index.ts"), "utf8"), ScriptTarget.Latest, true);
 const listeners = new Map<string, string>();
@@ -18,21 +19,25 @@ const collect = (node: import("typescript").Node) => {
 collect(source);
 assert.equal(listeners.size, 2);
 
-const fixture = (type: string, mobile: boolean, cached: Record<string, boolean>) => {
+const fixture = (type: string, mobile: boolean, cached: Record<string, boolean>, embedded = false) => {
     const calls: string[] = [];
     const noop = () => {};
     const button = {
-        dataset: {type: "NodeList"},
+        closest: (): null => null,
+        setAttribute: noop,
+        dataset: {type: "NodeList", embedId: embedded ? "embed" : ""},
         classList: {contains: () => false},
         getAttribute: (key: string) => key === "data-node-id" ? "list-id" : "NodeList",
         getBoundingClientRect: () => ({left: 10, bottom: 30}),
     };
     const menu = {
-        element: {setAttribute: noop},
+        element: {setAttribute: noop, classList: {contains: () => true}},
+        remove: noop,
         fullscreen: () => calls.push("fullscreen"),
         popup: () => calls.push("popup"),
     };
     const dependencies = {
+        ...loadMenuToggle({window: {siyuan: {menus: {menu}}}}),
         window: {siyuan: {...cached, menus: {menu}}},
         hasClosestByTag: () => button,
         hideTooltip: noop,
@@ -76,5 +81,12 @@ test("block icon clicks still honor modifiers carried by the mouse event", () =>
         for (const modifier of ["ctrlKey", "metaKey", "shiftKey", "altKey"]) {
             assert.deepEqual(fixture("contextmenu", mobile, {})({[modifier]: true}), []);
         }
+    }
+});
+
+test("embedded block icons do not replace the owning document when Ctrl or Command is clicked", () => {
+    for (const mobile of [false, true]) {
+        assert.deepEqual(fixture("click", mobile, {}, true)({ctrlKey: true}), []);
+        assert.deepEqual(fixture("click", mobile, {}, true)({metaKey: true}), []);
     }
 });

@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package sql
 
@@ -87,7 +75,8 @@ func FlushHistoryQueue() {
 			tx.Rollback()
 			logging.LogErrorf("queue operation failed: %s", err)
 
-			if 0 < len(op.histories) {
+			// 索引库写入失败不能据此认定历史快照损坏。
+			if !isRecoverableDBFileError(err) && 0 < len(op.histories) {
 				dir := op.histories[0].Path[:strings.Index(op.histories[0].Path, "/")]
 				dirPath := filepath.Join(util.HistoryDir, dir)
 				if removeErr := os.RemoveAll(dirPath); nil != removeErr {
@@ -99,7 +88,7 @@ func FlushHistoryQueue() {
 			return
 		}
 
-		if err = commitHistoryTx(tx); err != nil {
+		if err = commitTx(tx); err != nil {
 			logging.LogErrorf("commit tx failed: %s", err)
 			return
 		}

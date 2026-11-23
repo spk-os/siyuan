@@ -1,22 +1,13 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
 import (
+	"slices"
+	"strings"
+
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/parse"
 	"github.com/siyuan-note/siyuan/kernel/filesys"
@@ -32,8 +23,9 @@ const (
 )
 
 type MergeHeadingOptions struct {
-	DocHeadingMode     string
-	ContentHeadingMode string
+	DocHeadingMode        string
+	ContentHeadingMode    string
+	MarkSubdocumentTitles bool
 }
 
 func mergeHeadingOptionsOrDefault(options []MergeHeadingOptions) (ret MergeHeadingOptions) {
@@ -105,8 +97,8 @@ func mergeSubDocs(rootTree *parse.Tree, options MergeHeadingOptions, addRootTitl
 
 func walkBlock(insertPoint *ast.Node, block *Block, level int, options MergeHeadingOptions, addRootTitle bool) (err error) {
 	level++
-	for i := len(block.Children) - 1; i >= 0; i-- {
-		c := block.Children[i]
+	for _, c := range slices.Backward(block.Children) {
+
 		if err = walkBlock(insertPoint, c, level, options, addRootTitle); err != nil {
 			return
 		}
@@ -143,13 +135,62 @@ func loadTreeNodes(box string, p string, level int, options MergeHeadingOptions,
 		demoteMergedContentHeadings(tree, hLevel)
 	}
 
-	heading := &ast.Node{ID: tree.Root.ID, Type: ast.NodeHeading, HeadingLevel: hLevel}
-	heading.AppendChild(&ast.Node{Type: ast.NodeText, Tokens: []byte(tree.Root.IALAttr("title"))})
+	heading, err := exportDocumentHeading(tree.Root, hLevel, "")
+	if err != nil {
+		return nil, err
+	}
+	if options.MarkSubdocumentTitles {
+		heading.SetIALAttr("data-export-subdocument-title", "true")
+	}
 	tree.Root.PrependChild(heading)
 	for c := tree.Root.FirstChild; nil != c; c = c.Next {
 		ret = append(ret, c)
 	}
 	return
+}
+
+func exportDocumentHeading(root *ast.Node, level int, customTitle string) (*ast.Node, error) {
+	paragraph, err := treenode.DocumentTitleParagraph(root)
+	if err != nil {
+		return nil, err
+	}
+	heading := &ast.Node{ID: root.ID, Box: root.Box, Path: root.Path, Type: ast.NodeHeading, HeadingLevel: level}
+	for _, attr := range root.KramdownIAL {
+		if len(attr) == 2 && attr[0] != "type" && attr[0] != "style" {
+			heading.SetIALAttr(attr[0], attr[1])
+		}
+	}
+	if customTitle != "" {
+		heading.AppendChild(&ast.Node{Type: ast.NodeText, Tokens: []byte(customTitle)})
+	} else {
+		for child := paragraph.FirstChild; child != nil; {
+			next := child.Next
+			heading.AppendChild(child)
+			child = next
+		}
+	}
+	// 旧标题源仍可读取；导出的标题行将换行转为空格，避免再次导入时拆成正文。
+	lineBreaks := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ")
+	var breaks []*ast.Node
+	ast.Walk(heading, func(node *ast.Node, entering bool) ast.WalkStatus {
+		if !entering {
+			return ast.WalkContinue
+		}
+		switch node.Type {
+		case ast.NodeSoftBreak, ast.NodeHardBreak, ast.NodeBr:
+			node.InsertBefore(&ast.Node{Type: ast.NodeText, Tokens: []byte(" ")})
+			breaks = append(breaks, node)
+		case ast.NodeText, ast.NodeLinkText, ast.NodeBackslashContent, ast.NodeCodeSpanContent:
+			node.Tokens = []byte(lineBreaks.Replace(string(node.Tokens)))
+		case ast.NodeTextMark:
+			node.TextMarkTextContent = lineBreaks.Replace(node.TextMarkTextContent)
+		}
+		return ast.WalkContinue
+	})
+	for _, node := range breaks {
+		node.Unlink()
+	}
+	return heading, nil
 }
 
 func mergedDocHeadingLevel(depth int, mode string, addRootTitle bool) int {
@@ -191,7 +232,7 @@ func buildBlockChildren(block *Block) (err error) {
 	if IsBoxDoc(block.Box, block.ID) {
 		listPath = "/"
 	}
-	files, _, err := ListDocTree(block.Box, listPath, util.SortModeUnassigned, false, false, Conf.FileTree.MaxListCount)
+	files, _, err := ListDocTree(block.Box, listPath, util.SortModeUnassigned, false, false, Conf.FileTree.Load().MaxListCount)
 	if err != nil {
 		return
 	}

@@ -1,17 +1,26 @@
-import {CODE_TAB_SPACE_VALUES} from "../../protyle/wysiwyg/codeBlockUtil";
+import {IMAGE_OCR_MENU} from "../../menus/declarations/imageOCRMenu";
+import {declaredMenuCatalog} from "../../menus/declarations/menuDeclaration";
+import {CODE_TAB_SPACE_VALUES, getCodeTabSpacesLabel} from "../../protyle/wysiwyg/codeBlockUtil";
+import {orderGutterTurnIntoItems} from "../../protyle/gutter/turnIntoMenu";
+import {CALLOUT_PRESETS} from "../../protyle/wysiwyg/calloutType";
 import {
     DESKTOP_TOOLBAR_ENTRIES,
     getToolbarEntryId,
     getToolbarEntryLabel,
+    IToolbarCatalogEntry,
+    MOBILE_TOOLBAR_NAMES,
     TOOLBAR_ENTRY_ROOT_PATH,
 } from "../../protyle/toolbar/defaults";
 import {mergeEntryOrderPreservingUnknown} from "./order";
+import {getMobileToolbarActionKey, MOBILE_TOOLBAR_ACTIONS, MOBILE_TOOLBAR_INSERTS} from "../../mobile/util/toolbarActions";
 import {getPluginDockEntryKey} from "../../plugin/dockKey";
 import {
     getLegacyPluginTopBarEntryKey,
     getPluginTopBarEntryKey,
     isPluginTopBarEntryKey,
 } from "../../plugin/topBarKey";
+import {MOBILE_TOOLBAR_CONTEXT_KEYS} from "./mobileToolbarContext";
+import type {IBreadcrumbButtonCatalogEntry} from "../../plugin/breadcrumbButtonRegistry";
 
 export {getPluginDockEntryKey} from "../../plugin/dockKey";
 export {getLegacyPluginTopBarEntryKey, getPluginTopBarEntryKey} from "../../plugin/topBarKey";
@@ -61,8 +70,8 @@ const fixed = (key: string, label: () => string): IEntryCatalogNode =>
     node(key, label, true, undefined, undefined, {fixed: true});
 
 const codeTabSpacesChildren = () => [
-    node("default", () => `${window.siyuan.languages.default} (${window.siyuan.config.editor.codeTabSpaces})`),
-    ...CODE_TAB_SPACE_VALUES.map((value) => node(`tabSpaces${value}`, literal(value.toString()))),
+    node("default", () => `${window.siyuan.languages.default} (${getCodeTabSpacesLabel(window.siyuan.config.editor.codeTabSpaces)})`),
+    ...CODE_TAB_SPACE_VALUES.map((value) => node(`tabSpaces${value}`, () => getCodeTabSpacesLabel(value))),
 ];
 
 const copyChildren = () => [
@@ -211,7 +220,7 @@ const gutterCopyChildren = (single = false) => [
     ] : []),
 ];
 
-const gutterTurnInto = (multi: boolean) => node("turnInto", lang("turnInto"), true, [
+const gutterTurnInto = (multi: boolean) => node("turnInto", lang("turnInto"), true, orderGutterTurnIntoItems([
         node("removeList", lang("removeList")),
         node("list", lang("list")),
         node("orderedList", lang("ordered-list")),
@@ -227,14 +236,9 @@ const gutterTurnInto = (multi: boolean) => node("turnInto", lang("turnInto"), tr
         node("paragraph", lang("paragraph")),
         node("quote", lang("quote")),
         node("callout", lang("callout")),
-        node("calloutNote", location(lang("callout"), literal("Note"))),
-        node("calloutTip", location(lang("callout"), literal("Tip"))),
-        node("calloutImportant", location(lang("callout"), literal("Important"))),
-        node("calloutWarning", location(lang("callout"), literal("Warning"))),
-        node("calloutCaution", location(lang("callout"), literal("Caution"))),
+        ...CALLOUT_PRESETS.map(item => node(item.id, location(lang("callout"), literal(item.title)))),
         node("calloutCustom", location(lang("callout"), () => `${window.siyuan.languages.custom}...`)),
         ...(!multi ? [node("tabs", lang("tabs"))] : []),
-        // 列表及列表项复用段落和标题入口，保持单选、多选的配置标识和默认顺序一致。
         node("heading1", lang("heading1")),
         node("heading2", lang("heading2")),
         node("heading3", lang("heading3")),
@@ -246,7 +250,7 @@ const gutterTurnInto = (multi: boolean) => node("turnInto", lang("turnInto"), tr
         node("table", lang("tableBlock")),
         node("line", lang("line")),
         node("math", lang("math")),
-    ]);
+    ], item => item.key));
 
 const gutterHeadingTransform = () => node("tWithSubtitle", lang("tWithSubtitle"), true, [
     node("heading1", lang("heading1")),
@@ -328,6 +332,7 @@ const gutterTable = () => node("table", lang("tableBlock"), true, [
         node("useDefaultVerticalAlign", lang("useDefaultVerticalAlign")),
     ]),
     separator("separator_insert"),
+    node("insertTableHeaderRow", lang("insertTableHeaderRow")),
     node("insertRowAbove", lang("insertRowAbove")),
     node("insertRowBelow", lang("insertRowBelow")),
     node("insertColumnLeft", lang("insertColumnLeft")),
@@ -398,6 +403,10 @@ const gutterSingle = () => [
         node("cancelSuperBlock", () => `${window.siyuan.languages.cancel} ${window.siyuan.languages.superBlock}`),
         node("turnIntoVLayout", () => `${window.siyuan.languages.turnInto} ${window.siyuan.languages.vLayout}`),
         node("turnIntoHLayout", () => `${window.siyuan.languages.turnInto} ${window.siyuan.languages.hLayout}`),
+        node("prependSuperBlockColumn", lang("prependSuperBlockColumn")),
+        node("prependSuperBlockChild", lang("prependSuperBlockChild")),
+        node("appendSuperBlockColumn", lang("appendSuperBlockColumn")),
+        node("appendSuperBlockChild", lang("appendSuperBlockChild")),
     ]),
     separator("separator_code"),
     node("code", lang("code"), true, [
@@ -417,6 +426,7 @@ const gutterSingle = () => [
     separator("separator_VideoOrAudio"),
     node("assetVideo", location(lang("video"), lang("assets")), true, [
         node("asset", lang("assets")),
+        node("loop", lang("videoLoop")),
         separator("separator_rename"),
         node("rename", lang("rename")),
         node("openBy", lang("openBy")),
@@ -443,8 +453,13 @@ const gutterSingle = () => [
     node("blockEmbed", lang("blockEmbed"), true, [
         node("refresh", lang("refresh")),
         node("update", lang("update")),
+        node("refPopover", lang("refPopover")),
         separator("separator_breadcrumb"),
-        node("embedBlockBreadcrumb", lang("embedBlockBreadcrumb")),
+        ...["embedBlockBreadcrumb", "embedBlockBreadcrumbParentPath"].map(key => node(key, lang(key), true, [
+            node("enable", lang("enable")),
+            node("disable", lang("disable")),
+            node("default", lang("default")),
+        ])),
         node("headingEmbedMode", lang("headingEmbedMode"), true, [
             node("showHeadingWithBlocks", lang("showHeadingWithBlocks")),
             node("showHeadingOnlyTitle", lang("showHeadingOnlyTitle")),
@@ -455,6 +470,9 @@ const gutterSingle = () => [
             node("auto", lang("embedHeadingLevelPreserve")),
             ...[1, 2, 3, 4, 5, 6].map(level => node(`heading${level}`, lang(`heading${level}`))),
         ]),
+        separator("separator_conversion"),
+        node("convertToBlocks", lang("embedToBlocks")),
+        node("convertToReferences", lang("embedToReferences")),
     ]),
     separator("separator_1"),
     gutterHeadingTransform(),
@@ -468,6 +486,8 @@ const gutterSingle = () => [
     node("insertAfter", lang("insertAfter")),
     node("insertSuperBlockLeft", lang("insertSuperBlockLeft")),
     node("insertSuperBlockRight", lang("insertSuperBlockRight")),
+    node("createSuperBlockLeft", lang("createSuperBlockLeft")),
+    node("createSuperBlockRight", lang("createSuperBlockRight")),
     node("jumpTo", lang("jumpTo"), false, [
         node("jumpToParentPrev", lang("jumpToParentPrev"), false),
         node("jumpToParentNext", lang("jumpToParentNext"), false),
@@ -493,22 +513,43 @@ const gutterSingle = () => [
 ];
 
 export const SLASH_MENU_ROOT_PATH = "editor.slash.menu";
+export const SLASH_MENU_FREQUENT_PATH = `${SLASH_MENU_ROOT_PATH}.frequent`;
 
-// 共享工具栏声明决定目录默认顺序，字体和字号位于外观之前。
-const toolbarBuiltinChildren = DESKTOP_TOOLBAR_ENTRIES.map((item) => {
-    if (item.separator) {
-        return separator(item.key);
-    }
-    const fontControl = ["font-family", "font-size"].includes(item.key);
-    return node(item.key, lang(item.lang), !fontControl, undefined, undefined,
-        fontControl ? {
-            defaultVisible: () => typeof window === "undefined" || !window.siyuan.mobile,
-            customDefaultVisible: false,
-        } : undefined);
-});
+// 共享工具栏声明决定目录默认顺序，块类型位于首位，字体和字号位于外观之前。
+// 移动端操作按钮复用统一声明，复制和剪切由悬浮工具栏提供，显隐和排序使用已有配置标识。
+const toolbarBuiltinChildren = [
+    ...MOBILE_TOOLBAR_ACTIONS.map(item => node(getMobileToolbarActionKey(item.name), lang(item.lang), true)),
+    separator("mobile-separator"),
+    ...DESKTOP_TOOLBAR_ENTRIES.map((item) => {
+        if (item.separator) {
+            return separator(item.key);
+        }
+        const fontControl = ["font-family", "font-size"].includes(item.key);
+        const advancedFormat = ["sup", "sub", "kbd", "inline-math"].includes(item.key);
+        return node(item.key, lang(item.lang), !fontControl && !advancedFormat, undefined, undefined,
+            fontControl ? {
+                defaultVisible: () => typeof window === "undefined" || !window.siyuan.mobile,
+                customDefaultVisible: false,
+            } : undefined);
+    }),
+    ...MOBILE_TOOLBAR_INSERTS.map(item => node(getMobileToolbarActionKey(item.name), lang(item.lang), false,
+        undefined, undefined, {defaultVisible: () => false, customDefaultVisible: false})),
+];
 const toolbarBuiltinNodeMap = new Map(toolbarBuiltinChildren.map((item) => [item.key, item]));
 
+const mobileToolbarContexts = (children: IEntryCatalogNode[]) => MOBILE_TOOLBAR_CONTEXT_KEYS.map((key) => {
+    const selection = key === "mobile-selection";
+    const entries = children.filter(item => item.type === "separator" || item.key.startsWith("plugin:") ||
+        (selection ? MOBILE_TOOLBAR_NAMES.includes(item.key) && item.key !== "block-type" :
+            item.key.startsWith("mobile-") || ["block-type", "block-ref"].includes(item.key)))
+        .map(item => !selection && item.key === "block-ref" ? {...item,
+            defaultVisible: () => false, customDefaultVisible: false} : item);
+    return node(key, lang(selection ? "mobileToolbarTextSelection" : "mobileToolbarNoSelection"), true,
+        normalizeToolbarCatalogSeparators(entries), true, {fixed: true});
+});
+
 const slashMenuBuiltinChildren = [
+    node("frequent", lang("slashMenuFrequent"), false),
     node("template", lang("template")),
     node("widget", lang("widget")),
     node("assets", lang("assets")),
@@ -529,6 +570,8 @@ const slashMenuBuiltinChildren = [
     node("orderedList", lang("ordered-list")),
     node("check", lang("check")),
     node("quote", lang("quote")),
+    node("horizontalSuperBlock", lang("horizontalSuperBlock")),
+    node("verticalSuperBlock", lang("verticalSuperBlock")),
     node("tabs", lang("tabs")),
     node("mindmap", lang("mindmap")),
     node("calloutNote", location(lang("callout"), literal("Note"))),
@@ -561,6 +604,7 @@ const slashMenuBuiltinChildren = [
     node("tag", lang("tag")),
     node("inlineMath", lang("inline-math")),
     separator("separator_3"),
+    node("insertIOSPhotos", lang("insertImage")),
     node("insertAsset", lang("insertAsset")),
     node("insertHTMLFile", lang("insertHTMLFile")),
     node("insertIframeURL", lang("insertIframeURL")),
@@ -591,12 +635,30 @@ const slashMenuRoot = {
 const toolbarCatalogSection: IEntryCatalogSection = {
     key: TOOLBAR_ENTRY_ROOT_PATH,
     label: location(lang("editor"), lang("entryToolbar")),
-    children: toolbarBuiltinChildren,
+    children: [...toolbarBuiltinChildren, ...mobileToolbarContexts(toolbarBuiltinChildren)],
 };
 
 export const TOP_BAR_ROOT_PATH = "topBar";
 export const STATUS_BAR_ROOT_PATH = "statusBar";
 export const WINDOW_TOP_BAR_ROOT_PATH = "windowTopBar";
+export const BREADCRUMB_ROOT_PATH = "editor.breadcrumb";
+
+const breadcrumbBuiltinChildren = [
+    node("undo", lang("undo")),
+    node("redo", lang("redo")),
+    node("outdent", lang("outdent")),
+    node("indent", lang("indent")),
+    node("command-panel", lang("commandPanel")),
+    node("readonly", lang("lockEdit")),
+    node("doc", lang("entryDocumentMenu")),
+    node("more", lang("more")),
+];
+
+const breadcrumbCatalogSection: IEntryCatalogSection = {
+    key: BREADCRUMB_ROOT_PATH,
+    label: location(lang("editor"), lang("breadcrumb")),
+    children: breadcrumbBuiltinChildren,
+};
 
 const statusBarCatalogSection: IEntryCatalogSection = {
     key: STATUS_BAR_ROOT_PATH,
@@ -614,12 +676,12 @@ const statusBarCatalogSection: IEntryCatalogSection = {
 const topBarBuiltinChildren = [
     node("barSync", lang("syncNow")),
     node("barDailyNote", lang("dailyNote"), true, undefined, undefined, {
-        defaultVisible: () => false,
+        defaultVisible: () => typeof window === "undefined" || !window.siyuan.mobile,
         simpleDefaultVisible: true,
         customDefaultVisible: false,
     }),
     node("barRiffCard", lang("riffCard"), true, undefined, undefined, {
-        defaultVisible: () => false,
+        defaultVisible: () => typeof window === "undefined" || !window.siyuan.mobile,
         simpleDefaultVisible: true,
         customDefaultVisible: false,
     }),
@@ -695,7 +757,7 @@ export const entryCatalog: IEntryCatalogSection[] = [
         label: lang("entryWindowTopBar"),
         children: [
             node("windowWorkspace", lang("layout")),
-            node("pinWindow", lang("pin")),
+            node("pinWindow", lang("pinWindow")),
         ],
     },
     statusBarCatalogSection,
@@ -725,6 +787,7 @@ export const entryCatalog: IEntryCatalogSection[] = [
             node("riffCard", lang("riffCard"), false),
             node("search", lang("search")),
             node("replace", lang("replace")),
+            node("cleanUnusedAssets", lang("cleanUnusedAssets")),
             separator("separator_1"),
             node("close", lang("close")),
             node("delete", lang("delete")),
@@ -787,6 +850,7 @@ export const entryCatalog: IEntryCatalogSection[] = [
             node("pin", lang("pin")),
             node("unpin", lang("unpin")),
             node("tabToWindow", lang("tabToWindow")),
+            node("tabToMainWindow", lang("tabToMainWindow")),
         ],
     },
     {
@@ -848,6 +912,11 @@ export const entryCatalog: IEntryCatalogSection[] = [
                 node("enable", lang("enable"), false),
                 node("disable", lang("disable"), false),
             ]),
+            node("docOpenPosition", lang("docOpenPosition"), true, [
+                node("default", lang("default")),
+                node("restore", lang("restoreDocPosition")),
+                node("start", lang("docOpenAtStart")),
+            ]),
             node("fullWidth", lang("fullWidth"), false, [
                 node("enable", lang("enable"), false),
                 node("disable", lang("disable"), false),
@@ -863,6 +932,32 @@ export const entryCatalog: IEntryCatalogSection[] = [
         ],
     },
     toolbarCatalogSection,
+    breadcrumbCatalogSection,
+    {
+        key: "editor.ref",
+        label: location(lang("editor"), lang("ref")),
+        sortable: false,
+        children: [
+            node("newFile", lang("newFile"), true, undefined, false),
+            node("newSubDoc", lang("newSubDoc"), true, undefined, false),
+            node("newFileAtPath", lang("newFileAtPath"), true, undefined, false),
+        ],
+    },
+    {
+        key: "editor.blockEmbed",
+        label: location(lang("editor"), lang("blockEmbed")),
+        sortable: false,
+        children: [node("toolbar", lang("entryToolbar"), true, undefined, false)],
+    },
+    {
+        key: "editor.image",
+        label: location(lang("editor"), lang("image")),
+        sortable: false,
+        children: [
+            node("ocrText", lang("ocrResult"), false, undefined, false),
+            node("copyAsPNG", lang("copyAsPNG"), false, undefined, false),
+        ],
+    },
     {
         key: "editor.slash",
         label: location(lang("editor"), lang("entrySlashMenu")),
@@ -895,6 +990,7 @@ export const entryCatalog: IEntryCatalogSection[] = [
             node("pasteEscaped", lang("pasteEscaped"), false),
             node("selectAll", lang("selectAll")),
             separator("separator_1"),
+            node("insertTableHeaderRow", lang("insertTableHeaderRow")),
             node("insertRowAbove", lang("insertRowAbove")),
             node("insertRowBelow", lang("insertRowBelow")),
             node("insertColumnLeft", lang("insertColumnLeft")),
@@ -936,11 +1032,8 @@ export const entryCatalog: IEntryCatalogSection[] = [
             node("delete", lang("delete")),
             separator("separator_2"),
             node("rename", lang("rename")),
-            node("ocr", literal("OCR"), false, [
-                node("ocrResult", lang("ocrResult"), false),
-                separator("separator_reOCR"),
-                node("reOCR", lang("reOCR"), false),
-            ]),
+            // OCR 子菜单的入口、默认顺序与清空操作共用声明。
+            declaredMenuCatalog(IMAGE_OCR_MENU),
             node("alignCenter", lang("alignCenter")),
             node("alignLeft", lang("alignLeft")),
             node("width", lang("width"), true, [
@@ -1024,10 +1117,13 @@ export const entryCatalog: IEntryCatalogSection[] = [
             node("cut", lang("cut")),
             node("remove", lang("remove")),
             node("rename", lang("rename")),
+            node("embedHTMLFileBelow", lang("embedHTMLFileBelow")),
             node("turnIntoRef", lang("ref")),
             node("turnIntoText", lang("text")),
             separator("separator_2"),
-            node("openBy", lang("openBy")),
+            node("openBy", lang("openBy"), true, [
+                node("openMarkdownEditor", lang("openMarkdownEditor")),
+            ]),
             node("export", lang("export")),
             node("copyFile", lang("copyFile")),
         ],
@@ -1109,6 +1205,24 @@ export const getEntryPaths = () => Array.from(entryMap.entries())
     .map(([path]) => path);
 export const getEntryCatalogSection = (key: string) => sectionMap.get(key);
 export const getEntryCatalogChildren = (path: string) => childrenMap.get(path);
+
+let breadcrumbCatalogSignature = "[]";
+
+export const refreshBreadcrumbCatalog = (entries: IBreadcrumbButtonCatalogEntry[]) => {
+    const signature = JSON.stringify(entries);
+    if (signature === breadcrumbCatalogSignature) return;
+    const seen = new Set<string>();
+    breadcrumbCatalogSection.children = [
+        ...entries.filter(entry => {
+            if (!entry.key.startsWith("plugin:") || seen.has(entry.key)) return false;
+            seen.add(entry.key);
+            return true;
+        }).map(entry => node(entry.key, literal(entry.label))),
+        ...breadcrumbBuiltinChildren,
+    ];
+    breadcrumbCatalogSignature = signature;
+    rebuildCatalogIndexes();
+};
 export const isEntryOrderSortable = (parentPath: string) => {
     const section = getEntryCatalogSection(parentPath);
     if (section) {
@@ -1253,7 +1367,7 @@ export const refreshDockCatalog = (plugins: IDockCatalogPlugin[]) => {
     rebuildCatalogIndexes();
 };
 
-const normalizeToolbarCatalogSeparators = (nodes: IEntryCatalogNode[]) => {
+function normalizeToolbarCatalogSeparators(nodes: IEntryCatalogNode[]) {
     const result: IEntryCatalogNode[] = [];
     nodes.forEach((item) => {
         if (item.type === "separator" && (result.length === 0 || result[result.length - 1].type === "separator")) {
@@ -1265,7 +1379,7 @@ const normalizeToolbarCatalogSeparators = (nodes: IEntryCatalogNode[]) => {
         result.pop();
     }
     return result;
-};
+}
 
 const toolbarCatalogNodeSignature = (item: IEntryCatalogNode, pluginLabels: Map<string, string>) => [
     item.key,
@@ -1276,13 +1390,12 @@ const toolbarCatalogNodeSignature = (item: IEntryCatalogNode, pluginLabels: Map<
 let toolbarCatalogSignature = JSON.stringify(toolbarBuiltinChildren.map((item) =>
     toolbarCatalogNodeSignature(item, new Map())));
 
-export const refreshToolbarCatalog = (items: Array<string | IMenuItem>) => {
+export const refreshToolbarCatalogEntries = (items: IToolbarCatalogEntry[]) => {
     const nodes = new Map(toolbarBuiltinNodeMap);
     const pluginLabels = new Map<string, string>();
     const actualOrder: string[] = [];
     items.forEach((item) => {
-        const menuItem = typeof item === "string" ? {name: item} : item;
-        const key = getToolbarEntryId(menuItem);
+        const key = item.key;
         if (!key || actualOrder.includes(key)) {
             return;
         }
@@ -1290,19 +1403,31 @@ export const refreshToolbarCatalog = (items: Array<string | IMenuItem>) => {
         if (nodes.has(key)) {
             return;
         }
-        const label = getToolbarEntryLabel(menuItem) || menuItem.tip || menuItem.name;
+        const label = item.label;
         pluginLabels.set(key, label);
-        nodes.set(key, menuItem.name === "|" ? separator(key) : node(key, literal(label)));
+        nodes.set(key, item.separator ? separator(key) : node(key, literal(label)));
     });
-    const order = mergeEntryOrderPreservingUnknown(toolbarBuiltinChildren.map((item) => item.key), actualOrder);
-    const children = normalizeToolbarCatalogSeparators(order.flatMap((key) => nodes.get(key) || []));
+    const order = mergeEntryOrderPreservingUnknown(DESKTOP_TOOLBAR_ENTRIES.map((item) => item.key), actualOrder);
+    const children = normalizeToolbarCatalogSeparators([
+        ...toolbarBuiltinChildren.filter(item => item.key.startsWith("mobile-") && item.simple),
+        ...order.flatMap((key): IEntryCatalogNode | [] => nodes.get(key) || []),
+        ...toolbarBuiltinChildren.filter(item => item.key.startsWith("mobile-") && !item.simple),
+    ]);
     const signature = JSON.stringify(children.map((item) => toolbarCatalogNodeSignature(item, pluginLabels)));
     if (signature === toolbarCatalogSignature) {
         return;
     }
-    toolbarCatalogSection.children = children;
+    toolbarCatalogSection.children = [...children, ...mobileToolbarContexts(children)];
     toolbarCatalogSignature = signature;
     rebuildCatalogIndexes();
+};
+
+export const refreshToolbarCatalog = (items: Array<string | IMenuItem>) => {
+    refreshToolbarCatalogEntries(items.map((item) => {
+        const menuItem = typeof item === "string" ? {name: item} : item;
+        return {key: getToolbarEntryId(menuItem), label: getToolbarEntryLabel(menuItem) || menuItem.tip || menuItem.name,
+            separator: menuItem.name === "|"};
+    }));
 };
 
 interface ISlashMenuCatalogPlugin {

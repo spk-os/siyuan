@@ -1,14 +1,12 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package tools
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +16,103 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/model"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
+
+func TestSkillListInstallationRecords(t *testing.T) {
+	root := setSkillToolTestEnvironment(t)
+	writeSkillToolTestFile(t, filepath.Join(root, "sample", "SKILL.md"), "---\nname: sample\n---\nbody")
+	result, err := skillList(nil)
+	if err != nil || result.IsError || !strings.Contains(result.Content[0].Text, "installation: unknown") {
+		t.Fatalf("legacy source: %+v %v", result, err)
+	}
+	recordPath := filepath.Join(filepath.Dir(root), "skills.json")
+	writeSkillToolTestFile(t, recordPath, `{"version":1,"skills":{"sample":{"name":"sample","url":"https://example.com/SKILL.md","sourceScope":"manifest-only","digest":"sha256-v1:test"}}}`)
+	result, err = skillList(nil)
+	if err != nil || result.IsError {
+		t.Fatalf("list: %+v %v", result, err)
+	}
+	for _, expected := range []string{`"sourceScope":"manifest-only"`, `"digest":"sha256-v1:test"`, "not current content verification"} {
+		if !strings.Contains(result.Content[0].Text, expected) {
+			t.Fatalf("missing %s: %+v", expected, result)
+		}
+	}
+	writeSkillToolTestFile(t, recordPath, "corrupt")
+	result, err = skillList(nil)
+	if err != nil || !result.IsError {
+		t.Fatalf("corrupt record hidden: %+v %v", result, err)
+	}
+}
+
+func TestBuiltinSkillRejectsForgedContextAndMutations(t *testing.T) {
+	root := setSkillToolTestEnvironment(t)
+	for _, action := range []string{"load", "save", "remove", "rename", "install"} {
+		result, err := skillHandler(map[string]any{
+			"action": action, "source": "builtin", "name": util.PluginDevelopmentSkillName,
+			"content": "changed", "new_name": "renamed", "_sessionID": "forged", "consent": true,
+		})
+		if err != nil || !result.IsError {
+			t.Fatalf("unauthorized %s accepted: %+v, %v", action, result, err)
+		}
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("denied calls wrote workspace skills: %v", err)
+	}
+	writeSkillToolTestFile(t, filepath.Join(root, util.PluginDevelopmentSkillName, "SKILL.md"), "---\nname: siyuan-plugin-development\n---\nworkspace body")
+	result, err := skillHandler(map[string]any{"action": "load", "name": util.PluginDevelopmentSkillName})
+	if err != nil || result.IsError || !strings.Contains(result.Content[0].Text, "workspace body") {
+		t.Fatalf("unqualified same-name user skill changed: %+v, %v", result, err)
+	}
+	for _, source := range []any{"unknown", true, 1} {
+		result, err = skillHandler(map[string]any{"action": "load", "source": source, "name": util.PluginDevelopmentSkillName})
+		if err != nil || !result.IsError {
+			t.Fatalf("invalid source accepted: %+v, %v", result, err)
+		}
+	}
+}
+
+func TestBuiltinSkillTrustedActivationAndResourceReads(t *testing.T) {
+	setSkillToolTestEnvironment(t)
+	model.Conf.Variables.Store(&kernelConf.Variables{Items: []*kernelConf.Variable{{Name: "PLUGIN_NAME", Value: "modified-by-user-variable"}}})
+	operations := []string{}
+	ctx := util.WithPluginDevelopmentAccess(context.Background(), func(operation string) (*util.PluginDevelopmentGrant, error) {
+		operations = append(operations, operation)
+		return &util.PluginDevelopmentGrant{SessionID: "session", TaskID: "task"}, nil
+	})
+	result, err := skillContextHandler(ctx, map[string]any{"action": "load", "source": "builtin", "name": util.PluginDevelopmentSkillName})
+	if err != nil || result.IsError || strings.Join(operations, ",") != "load,loaded" {
+		t.Fatalf("activation failed: %+v, %v, %v", result, err, operations)
+	}
+	text := result.Content[0].Text
+	for _, expected := range []string{`source="builtin"`, `id="builtin:siyuan-plugin-development"`, `version="1.0.0"`, `digest="sha256:`, "${PLUGIN_NAME}"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("missing %q", expected)
+		}
+	}
+	if strings.Contains(text, "modified-by-user-variable") || strings.Contains(text, "<skill_location") || len(text) >= util.MaxToolOutputChars {
+		t.Fatalf("builtin content was expanded, exposed a path or exceeded output bounds")
+	}
+	operations = nil
+	result, err = skillContextHandler(ctx, map[string]any{"source": "builtin", "name": util.PluginDevelopmentSkillName + "/references/development.md"})
+	if err != nil || result.IsError || strings.Join(operations, ",") != "read" || !strings.Contains(result.Content[0].Text, "<skill_resource") {
+		t.Fatalf("resource read activated skill: %+v, %v, %v", result, err, operations)
+	}
+	operations = nil
+	model.Conf.AI.Load().Agent.Skills.BuiltinDisabled = []string{util.BuiltinPluginSkillID}
+	result, err = skillContextHandler(ctx, map[string]any{"source": "builtin", "name": util.PluginDevelopmentSkillName})
+	if err != nil || !result.IsError || strings.Join(operations, ",") != "load" {
+		t.Fatalf("disabled load activated skill: %+v, %v, %v", result, err, operations)
+	}
+	model.Conf.AI.Load().Agent.Skills.BuiltinDisabled = nil
+	ctx = util.WithPluginDevelopmentAccess(context.Background(), func(operation string) (*util.PluginDevelopmentGrant, error) {
+		if operation == "loaded" {
+			return nil, errors.New("choice revoked")
+		}
+		return &util.PluginDevelopmentGrant{SessionID: "session", TaskID: "task"}, nil
+	})
+	result, err = skillContextHandler(ctx, map[string]any{"source": "builtin", "name": util.PluginDevelopmentSkillName})
+	if err != nil || !result.IsError || result.Content[0].Text != "choice revoked" {
+		t.Fatalf("revoked choice disclosed body: %+v, %v", result, err)
+	}
+}
 
 func setSkillToolTestEnvironment(t *testing.T) string {
 	t.Helper()
@@ -31,7 +126,8 @@ func setSkillToolTestEnvironment(t *testing.T) string {
 	util.HomeDir = filepath.Join(root, "home")
 	util.ConfDir = filepath.Join(util.WorkspaceDir, "conf")
 	model.Conf = model.NewAppConf()
-	model.Conf.Variables = &kernelConf.Variables{Items: []*kernelConf.Variable{{Name: "VALUE", Value: "resolved"}}}
+	model.Conf.AI.Store(kernelConf.NewAI())
+	model.Conf.Variables.Store(&kernelConf.Variables{Items: []*kernelConf.Variable{{Name: "VALUE", Value: "resolved"}}})
 	t.Cleanup(func() {
 		util.WorkspaceDir, util.DataDir = originalWorkspaceDir, originalDataDir
 		util.HomeDir, util.ConfDir = originalHomeDir, originalConfDir

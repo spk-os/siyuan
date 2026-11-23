@@ -40,6 +40,7 @@ import {openCard} from "../../../card/openCard";
 import {syncGuide} from "../../../sync/syncGuide";
 import {unsplitCurrentWnd, unsplitWnd} from "../../../menus/tab";
 import {openFile} from "../../../editor/util";
+import {getAssetPathWithoutFragment} from "../../../util/pathName";
 import {fetchPost} from "../../../util/fetch";
 import {sanitizeClosedTabs, setStorageVal} from "../../../protyle/util/compatibility";
 import {adjustEditorFontSize} from "../../../util/editorFontSize";
@@ -55,7 +56,7 @@ const getSelectionText = (range?: Range) => {
     return selection?.rangeCount ? selection.getRangeAt(0).toString() : "";
 };
 
-export const globalCommand = (command: string, app: App, range?: Range) => {
+export const globalCommand = (command: string, app: App, range?: Range, openOnly = false) => {
     /// #if MOBILE
     switch (command) {
         case "fileTree":
@@ -74,7 +75,7 @@ export const globalCommand = (command: string, app: App, range?: Range) => {
             popMenu();
             return true;
         case "globalSearch":
-            popSearch(app);
+            popSearch(app, undefined, openOnly);
             return true;
         case "recentDocs":
             getRecentDocs(app);
@@ -109,6 +110,7 @@ export const globalCommand = (command: string, app: App, range?: Range) => {
             openSearch({
                 app,
                 hotkey: Constants.DIALOG_GLOBALSEARCH,
+                focusInput: openOnly,
                 key: getSelectionText(range)
             });
             return true;
@@ -159,11 +161,12 @@ export const globalCommand = (command: string, app: App, range?: Range) => {
             return true;
         case "mainMenu":
             if (!isWindow()) {
-                workspaceMenu(app, document.querySelector("#barWorkspace").getBoundingClientRect());
+                const target = document.querySelector("#barWorkspace");
+                workspaceMenu(app, target.getBoundingClientRect(), openOnly, target);
             }
             return true;
         case "recentDocs":
-            openRecentDocs();
+            openRecentDocs(openOnly);
             return true;
         case "recentClosed": {
             const closedTabsLength = window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].length;
@@ -184,7 +187,8 @@ export const globalCommand = (command: string, app: App, range?: Range) => {
                     return true;
                 }
                 if (childData.instance === "Asset") {
-                    fetchPost("/api/asset/statAsset", {path: childData.path}, (response) => {
+                    // 内核按文件名检查资源，需先去掉片段；重新打开时仍使用原始路径，保留 #t= 等媒体片段
+                    fetchPost("/api/asset/statAsset", {path: getAssetPathWithoutFragment(childData.path)}, (response) => {
                         if (response.code !== 1) {
                             openFile({
                                 app,
@@ -196,26 +200,15 @@ export const globalCommand = (command: string, app: App, range?: Range) => {
                     return true;
                 }
                 if (childData.instance === "Custom") {
-                    let exit = childData.customModelType === "siyuan-card";
-                    if (!exit) {
-                        app.plugins.find(p => {
-                            if (p.models[childData.customModelType]) {
-                                exit = true;
-                                return true;
-                            }
-                        });
-                    }
-                    if (exit) {
-                        openFile({
-                            app,
-                            custom: {
-                                icon: closeData.icon,
-                                title: closeData.title,
-                                data: childData.customModelData,
-                                id: childData.customModelType
-                            },
-                        });
-                    }
+                    openFile({
+                        app,
+                        custom: {
+                            icon: closeData.icon,
+                            title: closeData.title,
+                            data: childData.customModelData,
+                            id: childData.customModelType
+                        },
+                    });
                     return true;
                 }
                 fetchPost("/api/block/getBlockInfo", {id: childData.rootId || childData.blockId}, (infoResponse) => {
@@ -469,7 +462,7 @@ export const globalCommand = (command: string, app: App, range?: Range) => {
             newDailyNote(app);
             return true;
         case "dataHistory":
-            openHistory(app);
+            openHistory(app, "doc", openOnly);
             return true;
         case "editReadonly":
             editorConfigApi.patch("editor.readOnly", !window.siyuan.config.editor.readOnly);
@@ -481,7 +474,7 @@ export const globalCommand = (command: string, app: App, range?: Range) => {
             newFile(app);
             return true;
         case "riffCard":
-            openCard(app);
+            openCard(app, openOnly);
             return true;
         case "selectOpen1":
             selectOpenTab();

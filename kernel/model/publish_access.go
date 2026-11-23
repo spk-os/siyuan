@@ -1,22 +1,14 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -26,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +29,7 @@ import (
 	"github.com/siyuan-note/filelock"
 	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/av"
+	"github.com/siyuan-note/siyuan/kernel/cache"
 	"github.com/siyuan-note/siyuan/kernel/sql"
 	"github.com/siyuan-note/siyuan/kernel/treenode"
 	"github.com/siyuan-note/siyuan/kernel/util"
@@ -112,6 +106,8 @@ func GetPublishAccess() (ret PublishAccess) {
 }
 
 func SetPublishAccess(inputPublishAccess PublishAccess) (err error) {
+	finishDocTreeChange := cache.BeginDocTreeMutation("")
+	defer finishDocTreeChange()
 	now := time.Now().UnixMilli()
 	publishAccessLock.Lock()
 	defer publishAccessLock.Unlock()
@@ -292,7 +288,6 @@ func PurgePublishAccess() {
 		}
 	}
 	SetPublishAccess(tempPublishAccess)
-	return
 }
 
 func CheckPathAccessableByPublishIgnore(box string, path string, publishIgnore PublishAccess) bool {
@@ -432,11 +427,6 @@ func CheckBlockTreeMetadataAccessableByPublishAccess(c *gin.Context, publishAcce
 	return password == "" || CheckPublishAuthCookie(c, passwordID, password)
 }
 
-func CheckBlockIdDiscoverableByPublishAccessInBox(publishAccess PublishAccess, blockID, boxID string) bool {
-	bt := treenode.GetBlockTreeInBox(blockID, boxID)
-	return CheckBlockTreeDiscoverableByPublishAccess(publishAccess, bt)
-}
-
 func CheckBlockTreeDiscoverableByPublishAccess(publishAccess PublishAccess, bt *treenode.BlockTree) bool {
 	if bt == nil || IsEncryptedBoxDeniedByPublishAccess(bt.BoxID) {
 		return false
@@ -449,11 +439,14 @@ func CheckBlockTreeDiscoverableByPublishAccess(publishAccess PublishAccess, bt *
 }
 
 func GetBlockTreePublishAccessStatus(c *gin.Context, publishAccess PublishAccess, bt *treenode.BlockTree) PublishAccessStatus {
+	return getBlockTreePublishAccessStatus(c, publishAccess, filterDisablePublishAccess(publishAccess), bt)
+}
+
+func getBlockTreePublishAccessStatus(c *gin.Context, publishAccess, publishDisable PublishAccess, bt *treenode.BlockTree) PublishAccessStatus {
 	if bt == nil || IsEncryptedBoxDeniedByPublishAccess(bt.BoxID) {
 		return PublishAccessDenied
 	}
 
-	publishDisable := filterDisablePublishAccess(publishAccess)
 	if !CheckPathAccessableByPublishIgnore(bt.BoxID, bt.Path, publishDisable) {
 		return PublishAccessDenied
 	}
@@ -469,21 +462,83 @@ func checkBlockTreeAccessableByPublishAccess(c *gin.Context, publishAccess Publi
 	return GetBlockTreePublishAccessStatus(c, publishAccess, bt) == PublishAccessAllowed
 }
 
+// publishAuthCookieTTL 发布密码认证 Cookie 的服务端有效期，与下发的 MaxAge 保持一致。
+const publishAuthCookieTTL = 24 * time.Hour
+
+// publishAuthCookieKey 是签发发布密码认证 Cookie 的进程级随机密钥。
+// Cookie 值不能由客户端根据 ID 和密码计算，否则内容接口会成为绕过密码接口限流的密码预言机
+// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-6fw6-h6p3-c6gf
+var (
+	publishAuthCookieKey     []byte
+	publishAuthCookieKeyOnce sync.Once
+)
+
+func initPublishAuthCookieKey() {
+	publishAuthCookieKeyOnce.Do(func() {
+		publishAuthCookieKey = make([]byte, 32)
+		if _, err := rand.Read(publishAuthCookieKey); err != nil {
+			logging.LogFatalf(logging.ExitCodeFatal, "initialize publish auth cookie key failed: %s", err)
+		}
+	})
+}
+
+// PublishAuthCookieValue 返回发布密码认证 Cookie 的值：过期时间加 HMAC 签名。
+// 值依赖进程级密钥，客户端无法离线计算；内核内部和测试都应通过它构造 Cookie。
+func PublishAuthCookieValue(ID, password string) string {
+	return publishAuthCookieValue(ID, password, time.Now().Add(publishAuthCookieTTL).Unix())
+}
+
+func publishAuthCookieValue(ID, password string, expiry int64) string {
+	expiryStr := strconv.FormatInt(expiry, 10)
+	return expiryStr + ":" + publishAuthCookieSignature(ID, password, expiryStr)
+}
+
+func publishAuthCookieSignature(ID, password, expiry string) string {
+	initPublishAuthCookieKey()
+	mac := hmac.New(sha256.New, publishAuthCookieKey)
+	mac.Write([]byte(ID))
+	mac.Write([]byte{0})
+	mac.Write([]byte(password))
+	mac.Write([]byte{0})
+	mac.Write([]byte(expiry))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// checkPublishAuthCookieValue 校验 Cookie 值的签名与服务端过期时间。
+func checkPublishAuthCookieValue(value, ID, password string) bool {
+	expiryStr, signature, ok := strings.Cut(value, ":")
+	if !ok {
+		return false
+	}
+	expiry, err := strconv.ParseInt(expiryStr, 10, 64)
+	if nil != err || time.Now().Unix() > expiry {
+		return false
+	}
+	return util.AuthCodeEquals(signature, publishAuthCookieSignature(ID, password, expiryStr))
+}
+
 func SetPublishAuthCookie(c *gin.Context, ID string, password string) {
-	authCookie := util.SHA256Hash([]byte(ID + password))
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     "publish-auth-" + ID,
-		Value:    authCookie,
-		MaxAge:   24 * 60 * 60,
-		Path:     "/",
-		Secure:   util.SSL,
+		Name:   "publish-auth-" + ID,
+		Value:  PublishAuthCookieValue(ID, password),
+		MaxAge: int(publishAuthCookieTTL.Seconds()),
+		Path:   "/",
+		// 只有客户端连接确实使用 TLS 时才标记 Secure，与发布会话 Cookie 保持一致
+		// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-hpj5-f7cj-vvwr
+		Secure:   util.SSL || util.IsTLSRequest(c.Request),
 		HttpOnly: true,
 	})
 }
 
 func CheckPublishAuthCookie(c *gin.Context, ID string, password string) bool {
+	if nil == c {
+		return false
+	}
 	authCookie, err := c.Request.Cookie("publish-auth-" + ID)
-	return err == nil && authCookie.Value == util.SHA256Hash([]byte(ID+password))
+	if nil != err {
+		return false
+	}
+	return checkPublishAuthCookieValue(authCookie.Value, ID, password)
 }
 
 // AssetPathFromDataRelativePath 从 data 相对路径提取文档中使用的资源路径和笔记本 ID。
@@ -524,7 +579,13 @@ func CheckAbsPathAccessableByPublishAccess(c *gin.Context, absPath string, publi
 		}
 
 		if assetPath, box, ok := AssetPathFromDataRelativePath(relPath); ok {
-			return checkAssetPathAccessableByPublishAccess(c, publishAccess, assetPath, box)
+			// 文档级资源必须由所属文档目录授权，避免同名资源借用其他文档的发布权限
+			// https://github.com/siyuan-note/siyuan/security/advisories/GHSA-xxqp-6jxw-qr84
+			ownerAbsPath := ""
+			if "" != box && !strings.HasPrefix(relPath, box+"/assets/") {
+				ownerAbsPath = absPath
+			}
+			return checkAssetPathAccessableByPublishAccess(c, publishAccess, assetPath, box, ownerAbsPath)
 		}
 
 		if ast.IsNodeIDPattern(pathParts[0]) {
@@ -538,10 +599,9 @@ func CheckAbsPathAccessableByPublishAccess(c *gin.Context, absPath string, publi
 	return false
 }
 
-func checkAssetPathAccessableByPublishAccess(c *gin.Context, publishAccess PublishAccess, assetPath, boxID string) bool {
-	publishIgnore := GetDisablePublishAccess(publishAccess)
+func newPublishAccessItemFilter(c *gin.Context, publishAccess PublishAccess) attributeViewItemFilter {
 	itemAccessCache := map[*av.AttributeView]map[string]bool{}
-	itemFilter := func(attrView *av.AttributeView, itemID string) bool {
+	return func(attrView *av.AttributeView, itemID string) bool {
 		itemAccess := itemAccessCache[attrView]
 		if nil == itemAccess {
 			itemAccess = map[string]bool{}
@@ -555,9 +615,21 @@ func checkAssetPathAccessableByPublishAccess(c *gin.Context, publishAccess Publi
 		itemAccess[itemID] = accessable
 		return accessable
 	}
+}
+
+func checkAssetPathAccessableByPublishAccess(c *gin.Context, publishAccess PublishAccess, assetPath, boxID, ownerAbsPath string) bool {
+	publishIgnore := GetDisablePublishAccess(publishAccess)
+	itemFilter := newPublishAccessItemFilter(c, publishAccess)
 	for _, bt := range treenode.GetBlockTreesByType("d") {
 		if "" != boxID && bt.BoxID != boxID {
 			continue
+		}
+
+		if "" != ownerAbsPath {
+			ownedPath := filepath.Join(util.DataDir, bt.BoxID, filepath.FromSlash(filepath.Dir(bt.Path)), filepath.FromSlash(assetPath))
+			if filepath.Clean(ownedPath) != ownerAbsPath {
+				continue
+			}
 		}
 
 		passwordID, password := GetPathPasswordByPublishAccess(bt.BoxID, bt.Path, publishAccess)
@@ -666,6 +738,58 @@ func checkAttributeViewBlockTreesAccessableByPublishAccess(c *gin.Context, publi
 		}
 	}
 	return false
+}
+
+// FilterBlockAttrsByPublishAccess 返回读者可用的块属性副本，
+// 移除指向读者不可访问属性视图的 custom-avs 绑定。
+func FilterBlockAttrsByPublishAccess(c *gin.Context, publishAccess PublishAccess, attrs map[string]string) map[string]string {
+	avIDs, ok := attrs[av.NodeAttrNameAvs]
+	if !ok {
+		return attrs
+	}
+	filtered := filterAttributeViewIDsByPublishAccess(c, publishAccess, avIDs)
+	if filtered == avIDs {
+		return attrs
+	}
+
+	ret := make(map[string]string, len(attrs))
+	for name, value := range attrs {
+		ret[name] = value
+	}
+	if "" == filtered {
+		delete(ret, av.NodeAttrNameAvs)
+	} else {
+		ret[av.NodeAttrNameAvs] = filtered
+	}
+	return ret
+}
+
+// FilterBlockIALByPublishAccess 返回移除不可访问属性视图绑定后的 IAL 副本。
+func FilterBlockIALByPublishAccess(c *gin.Context, publishAccess PublishAccess, ial [][]string) [][]string {
+	ret := make([][]string, 0, len(ial))
+	for _, attr := range ial {
+		if 2 > len(attr) || av.NodeAttrNameAvs != attr[0] {
+			ret = append(ret, attr)
+			continue
+		}
+		if filtered := filterAttributeViewIDsByPublishAccess(c, publishAccess, attr[1]); "" != filtered {
+			ret = append(ret, []string{attr[0], filtered})
+		}
+	}
+	return ret
+}
+
+func filterAttributeViewIDsByPublishAccess(c *gin.Context, publishAccess PublishAccess, value string) string {
+	ids := strings.Split(value, ",")
+	ret := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if "" == id || !CheckAttributeViewAccessableByPublishAccess(c, publishAccess, id) {
+			continue
+		}
+		ret = append(ret, id)
+	}
+	return strings.Join(ret, ",")
 }
 
 func FilterAttributeViewByPublishAccess(c *gin.Context, publishAccess PublishAccess, avID, blockID string, viewable av.Viewable) av.Viewable {
@@ -1731,9 +1855,15 @@ func FilterLocalStorageByPublishAccess(localStorage map[string]any) (ret map[str
 	return
 }
 
+// DocAssetsForPublishAccess 返回发布读者可见的文档资源，属性视图行按其绑定文档的发布访问过滤。
+func DocAssetsForPublishAccess(c *gin.Context, publishAccess PublishAccess, rootID string, retainQueryStr bool) ([]string, error) {
+	return docAssets(rootID, retainQueryStr, newPublishAccessItemFilter(c, publishAccess))
+}
+
 func FilterAssetContentByPublishAccess(c *gin.Context, publishAccess PublishAccess, assetContent []*AssetContent) (ret []*AssetContent) {
 	publishInvisible := GetInvisiblePublishAccess(publishAccess)
 	publishDisable := GetDisablePublishAccess(publishAccess)
+	itemFilter := newPublishAccessItemFilter(c, publishAccess)
 	validAssets := []string{}
 	bts := treenode.GetBlockTreesByType("d")
 	for _, bt := range bts {
@@ -1741,7 +1871,7 @@ func FilterAssetContentByPublishAccess(c *gin.Context, publishAccess PublishAcce
 		if CheckPathAccessableByPublishIgnore(bt.BoxID, bt.Path, publishInvisible) &&
 			CheckPathAccessableByPublishIgnore(bt.BoxID, bt.Path, publishDisable) &&
 			(password == "" || CheckPublishAuthCookie(c, passwordID, password)) {
-			assets, err := DocAssets(bt.ID, false)
+			assets, err := docAssets(bt.ID, false, itemFilter)
 			if err == nil {
 				validAssets = append(validAssets, assets...)
 			}

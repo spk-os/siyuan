@@ -1,12 +1,43 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package apicontract
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestContractTopLevelJSONErrorCompatibility(t *testing.T) {
+	endpoint := Endpoint[struct{}, Null]{definition: Definition{Path: "/test", Body: JSONBody}}
+	for _, body := range []string{"[]", "1", "true", `"text"`} {
+		var legacy map[string]any
+		legacyErr := json.NewDecoder(strings.NewReader(body)).Decode(&legacy)
+		_, err := endpoint.Decode(strings.NewReader(body))
+		want := fmt.Sprintf("Parses request [/test] failed: %s", legacyErr)
+		if err == nil || err.Error() != want {
+			t.Fatalf("body %s: got %v, want %s", body, err, want)
+		}
+		for _, decode := range []func(io.Reader, string) error{
+			func(reader io.Reader, path string) error { _, err := blockRequestFields(reader, path); return err },
+			func(reader io.Reader, path string) error {
+				_, err := decodeSettingConfig(reader, path, false)
+				return err
+			},
+			func(reader io.Reader, path string) error { _, err := syncRequestFields(reader, path); return err },
+		} {
+			if err := decode(strings.NewReader(body), "/test"); err == nil || err.Error() != want {
+				t.Fatalf("custom decoder body %s: got %v, want %s", body, err, want)
+			}
+		}
+	}
+}
 
 func TestRequestCompatibility(t *testing.T) {
 	for _, body := range []string{"", "null", "{}", "[]", "invalid", `{"flashcard":`, `{"flashcard":null}`} {
@@ -87,8 +118,8 @@ func TestResponseContracts(t *testing.T) {
 		{"/api/search/searchTag", `{"code":0,"msg":"","data":{"tagz":[],"k":""}}`, false},
 		{"/api/search/searchTag", `{"code":-1,"msg":"readonly","data":{"closeTimeout":5000},"cmd":"","reqId":0}`, true},
 		{"/api/notebook/lsNotebooks", `{"code":0,"msg":"","data":null}`, true},
-		{"/api/history/searchHistory", `{"code":0,"msg":"","data":{"histories":null,"pageCount":0,"totalCount":0}}`, true},
-		{"/api/history/searchHistory", `{"code":0,"msg":"","data":{"histories":[123],"pageCount":1,"totalCount":1}}`, false},
+		{"/api/history/searchHistory", `{"code":0,"msg":"","data":{"histories":null,"itemCounts":{},"pageCount":0,"totalCount":0}}`, true},
+		{"/api/history/searchHistory", `{"code":0,"msg":"","data":{"histories":[123],"itemCounts":{},"pageCount":1,"totalCount":1}}`, false},
 		{"/api/block/getBlockInfo", `{"code":3,"msg":"indexing","data":"indexing"}`, true},
 		{"/api/block/getBlockInfo", `{"code":0,"msg":"","data":{"rootID":"id","rootTitle":"","rootIcon":"","rootTitleEmpty":true,"publishAccessRequired":true}}`, true},
 		{"/api/block/getBlockInfo", `{"code":0,"msg":"","data":{"rootID":"id","rootTitle":"","rootIcon":"","rootTitleEmpty":true,"publishAccessRequired":false}}`, false},
@@ -175,22 +206,14 @@ func TestRouteCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile("legacy_routes.json")
-	if err != nil {
+	if err := CheckRoutes(routes, bindings); err != nil {
 		t.Fatal(err)
 	}
-	var legacy []Route
-	if err := json.Unmarshal(data, &legacy); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckRoutes(routes, bindings, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckRoutes(append(routes, Route{"POST", "/api/new/untyped", "newHandler"}), bindings, legacy); err == nil {
+	if err := CheckRoutes(append(routes, Route{Method: "POST", Path: "/api/new/untyped", Handler: "newHandler"}), bindings); err == nil {
 		t.Fatal("new untyped route was accepted")
 	}
 	bindings["getBlockAttrs"] = "setBlockAttrs"
-	if err := CheckRoutes(routes, bindings, legacy); err == nil {
+	if err := CheckRoutes(routes, bindings); err == nil {
 		t.Fatal("handler bound to the wrong contract was accepted")
 	}
 }
@@ -204,15 +227,11 @@ func TestGeneratedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyJSON, err := os.ReadFile("legacy_routes.json")
+	documentation, err := ReadEndpointDocumentation("contracts.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var legacy []Route
-	if err := json.Unmarshal(legacyJSON, &legacy); err != nil {
-		t.Fatal(err)
-	}
-	if strings.ReplaceAll(string(declaration), "\r\n", "\n") != string(bundle.TypeScript(legacy)) {
+	if strings.ReplaceAll(string(declaration), "\r\n", "\n") != string(bundle.TypeScript(documentation)) {
 		t.Fatal("TypeScript contracts are out of date")
 	}
 	schema, err := os.ReadFile("schema.json")

@@ -1,9 +1,9 @@
 import type {App} from "../index";
+import {getActiveDocTreeController, getDocTreeController} from "../layout/dock/docTree/DocTreeController";
 import {getFrontend} from "../util/functions";
 import {hasClosestBlock, hasClosestByClassName, hasClosestByTag} from "../protyle/util/hasClosest";
 import {
     cloneCommandRange,
-    collectCommandFileTreeMetadata,
     createCommandContextSnapshot,
     isBottomBacklinkEditorContext,
     resolveCommandFocus,
@@ -146,14 +146,14 @@ const getFileTree = (elements?: Element[]) => {
     if (!(model instanceof Files)) {
         return undefined;
     }
-    const selectedElements = elements ? [...elements] :
-        Array.from(model.element.querySelectorAll(".b3-list-item--focus"));
-    const metadata = collectCommandFileTreeMetadata(selectedElements);
-    return {
-        model,
-        elements: selectedElements,
-        ...metadata,
-    } as ICommandFileTreeContext;
+    const controller = (elements?.length ? getDocTreeController(elements[0]) : undefined) ||
+        getActiveDocTreeController(model.element.parentElement) || model.docTree;
+    if (controller) {
+        const items = controller.getSelectedItems().map(item => ({...item}));
+        return {model, controller, items, selectionVersion: controller.selectionVersion, elements: [],
+            ids: items.map(item => item.id), paths: items.map(item => item.path)} as ICommandFileTreeContext;
+    }
+    return undefined;
 };
 /// #endif
 
@@ -204,11 +204,13 @@ export const captureCommandContext = (options: ICaptureCommandContextOptions): I
     if (!range) {
         range = cloneCommandRange(protyle?.toolbar?.range);
     }
-    const blockElement = range ? hasClosestBlock(range.startContainer) : false;
+    const blockElement = range ? hasClosestBlock(range.startContainer, true) : false;
     const block = getBlockContext(blockElement);
     const selectedBlocks = protyle?.wysiwyg?.element ?
         Array.from(protyle.wysiwyg.element.querySelectorAll<HTMLElement>(".protyle-wysiwyg--select"))
-            .map(element => getBlockContext(element)).filter((item): item is ICommandBlockContext => Boolean(item)) : [];
+            .map(element => getBlockContext(hasClosestBlock(element, true) || element))
+            .filter((item, index, items): item is ICommandBlockContext => item !== undefined &&
+                items.findIndex(other => other?.id === item.id) === index) : [];
     const tableCellElement = range && (hasClosestByTag(range.startContainer, "TD") ||
         hasClosestByTag(range.startContainer, "TH"));
     const focus = resolveCommandFocus({

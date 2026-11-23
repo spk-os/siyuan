@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //go:build (sqlcipher || libsqlcipher) && cgo
 
 package api
@@ -58,9 +62,19 @@ func TestAPIContractDuplicateDocTree(t *testing.T) {
 	}
 	model.Conf = model.NewAppConf()
 	model.Conf.Lang = "en"
-	model.Conf.NotebookCrypto, model.Conf.Sync, model.Conf.FileTree = conf.NewNotebookCrypto(), conf.NewSync(), conf.NewFileTree()
-	model.Conf.Editor, model.Conf.Export, model.Conf.Search = conf.NewEditor(), conf.NewExport(), conf.NewSearch()
-	model.Conf.Api = &conf.API{Token: "duplicate-tree-test"}
+	{
+		confSectionValue0, confSectionValue1, confSectionValue2 := conf.NewNotebookCrypto(), conf.NewSync(), conf.NewFileTree()
+		model.Conf.NotebookCrypto = confSectionValue0
+		model.Conf.Sync.Store(confSectionValue1)
+		model.Conf.FileTree.Store(confSectionValue2)
+	}
+	{
+		confSectionValue0, confSectionValue1, confSectionValue2 := conf.NewEditor(), conf.NewExport(), conf.NewSearch()
+		model.Conf.Editor.Store(confSectionValue0)
+		model.Conf.Export.Store(confSectionValue1)
+		model.Conf.Search.Store(confSectionValue2)
+	}
+	model.Conf.Api.Store(&conf.API{Token: "duplicate-tree-test"})
 	model.Conf.AccessAuthCode = "application-password"
 	langData, err := os.ReadFile(filepath.Join("..", "..", "app", "appearance", "langs", "en.json"))
 	if err != nil {
@@ -84,13 +98,13 @@ func TestAPIContractDuplicateDocTree(t *testing.T) {
 	engine := gin.New()
 	engine.Use(sessions.Sessions("duplicate-tree-test", cookie.NewStore([]byte("duplicate-tree-session-test-key"))))
 	ServeAPI(engine)
-	const endpoint = "/api/filetree/duplicateDocTree"
+	endpoint := "/api/filetree/duplicateDocTree"
 	request := func(id string) *http.Request {
 		ret := httptest.NewRequest("POST", endpoint, strings.NewReader(`{"id":"`+id+`"}`))
 		ret.Header.Set("Authorization", "Token duplicate-tree-test")
 		return ret
 	}
-	post := func(id string, success bool) apicontract.FileTreeDuplicateData {
+	post := func(t *testing.T, id string, success bool) apicontract.FileTreeDuplicateData {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		engine.ServeHTTP(recorder, request(id))
@@ -142,11 +156,11 @@ func TestAPIContractDuplicateDocTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	source, _ := fixture(box.ID)
-	checkCopy(post(source.ID, true), source)
-	post(source.Root.FirstChild.ID, false)
-	post(ast.NewNodeID(), false)
+	checkCopy(post(t, source.ID, true), source)
+	post(t, source.Root.FirstChild.ID, false)
+	post(t, ast.NewNodeID(), false)
 	util.ReadOnly = true
-	post(source.ID, false)
+	post(t, source.ID, false)
 	util.ReadOnly = false
 	unauthorized := request(source.ID)
 	unauthorized.Header.Del("Authorization")
@@ -155,6 +169,49 @@ func TestAPIContractDuplicateDocTree(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated copy admitted: %s", recorder.Body.String())
 	}
+	t.Run("collection-failure", func(t *testing.T) {
+		originalEndpoint := endpoint
+		defer func() { endpoint = originalEndpoint }()
+		view := av.NewAttributeView(ast.NewNodeID())
+		keyID := ast.NewNodeID()
+		view.KeyValues = append(view.KeyValues, &av.KeyValues{Key: &av.Key{ID: keyID, Name: "Date", Type: av.KeyTypeDate}})
+		view.Automations = &av.AutomationConfig{Spec: 2, Rules: []*av.AutomationRule{{
+			ID: ast.NewNodeID(), Name: "Invalid date", Trigger: "block", Enabled: true,
+			BlockSource: &av.AutomationBlockSource{NotebookIDs: []string{box.ID}, Types: []string{"d"}, Tags: []string{"todo"}},
+			Actions: []*av.AutomationAction{{Type: "collect", Target: "current", Fields: map[string]*av.AutomationValue{
+				keyID: {Mode: "template", Template: "invalid date"},
+			}}},
+		}}}
+		if err := av.SaveAttributeView(view); err != nil {
+			t.Fatal(err)
+		}
+		host := treenode.NewTree(box.ID, "/"+ast.NewNodeID()+".sy", "/Database", "Database")
+		node := &ast.Node{Type: ast.NodeAttributeView, ID: ast.NewNodeID(), AttributeViewID: view.ID, AttributeViewType: "table"}
+		node.SetIALAttr("id", node.ID)
+		host.Root.AppendChild(node)
+		if _, err := filesys.WriteTree(host); err != nil {
+			t.Fatal(err)
+		}
+		treenode.UpsertBlockTree(host)
+		av.UpsertBlockRel(view.ID, node.ID)
+		source.Root.SetIALAttr("tags", "todo")
+		if _, err := filesys.WriteTree(source); err != nil {
+			t.Fatal(err)
+		}
+		treenode.UpsertBlockTree(source)
+		before := len(treenode.GetBlockTreesByTypeInBox("d", box.ID))
+		for _, name := range []string{"duplicateDoc", "duplicateDocTree"} {
+			endpoint = "/api/filetree/" + name
+			post(t, source.ID, false)
+			if got := len(treenode.GetBlockTreesByTypeInBox("d", box.ID)); got != before {
+				t.Fatalf("%s left a failed copy in the index: %d != %d", name, got, before)
+			}
+		}
+		view.Automations.Rules[0].Enabled = false
+		if err := av.SaveAttributeView(view); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	const password = "duplicate-password"
 	if err = model.EnableEncryptedNotebook(password); err != nil {
@@ -240,7 +297,7 @@ func TestAPIContractDuplicateDocTree(t *testing.T) {
 		t.Fatal("copy lease ended before response serialization")
 	}
 	requireAPIContract(t, "POST", endpoint, writer.ResponseRecorder)
-	post(source.ID, false)
+	post(t, source.ID, false)
 	if err = model.UnlockBox(boxID, password, (&model.Box{ID: boxID}).GetConf().BoxCrypt); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +317,7 @@ func TestAPIContractDuplicateDocTree(t *testing.T) {
 	if err = os.WriteFile(childPath, corrupt, 0644); err != nil {
 		t.Fatal(err)
 	}
-	post(source.ID, false)
+	post(t, source.ID, false)
 	afterEntries, _ := os.ReadDir(filepath.Join(util.DataDir, boxID))
 	preserved, _ := os.ReadFile(childPath)
 	if len(beforeEntries) != len(afterEntries) || !bytes.Equal(corrupt, preserved) {
@@ -278,7 +335,7 @@ func TestAPIContractDuplicateDocTree(t *testing.T) {
 	if err = os.WriteFile(viewPath, corruptView, 0644); err != nil {
 		t.Fatal(err)
 	}
-	post(source.ID, false)
+	post(t, source.ID, false)
 	sortAfter, _ := os.ReadFile(sortPath)
 	mirrorAfter, _ := os.ReadFile(mirrorPath)
 	afterEntries, _ = os.ReadDir(filepath.Join(util.DataDir, boxID))

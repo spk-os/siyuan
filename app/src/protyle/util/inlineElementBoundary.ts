@@ -2,8 +2,8 @@ import {unwrapLongTextRuns} from "./longTextWrap";
 
 const INLINE_BOUNDARY_ATTRIBUTE = "data-inline-boundary";
 const INLINE_WRAP_ATTRIBUTE = "data-inline-wrap";
-const SEMANTIC_INLINE_SELECTOR = 'span[data-type~="code"],span[data-type~="tag"],span[data-type~="kbd"]';
-export const SEMANTIC_INLINE_HTML_REGEXP = /<span\b[^>]*\bdata-type=(?:"(?:[^"]* )?(?:code|kbd|tag)(?: [^"]*)?"|'(?:[^']* )?(?:code|kbd|tag)(?: [^']*)?')/iu;
+const SEMANTIC_INLINE_SELECTOR = 'span[data-type~="code"],span[data-type~="tag"],span[data-type~="kbd"],span[data-type~="sup"],span[data-type~="sub"]';
+export const SEMANTIC_INLINE_HTML_REGEXP = /<span\b[^>]*\bdata-type=(?:"(?:[^"]* )?(?:code|kbd|tag|sup|sub)(?: [^"]*)?"|'(?:[^']* )?(?:code|kbd|tag|sup|sub)(?: [^']*)?')/iu;
 const WORD_JOINER = "\u2060";
 const ZERO_WIDTH_SPACE = "\u200b";
 
@@ -98,6 +98,21 @@ export const restoreInlineElementBoundaries = (root: ParentNode) => {
     elements.forEach(restoreInlineElementBoundary);
 };
 
+const getInlineBoundaryAtPoint = (container: Node, offset: number) => {
+    let previous = container.nodeType === Node.TEXT_NODE ? container : container.childNodes[offset - 1];
+    while (previous?.nodeName === "WBR") {
+        previous = previous.previousSibling;
+    }
+    if (!previous || getInlineElementBoundaryOffset(previous) < 0) {
+        return;
+    }
+    let next = previous.nextSibling;
+    while (next?.nodeName === "WBR") {
+        next = next.nextSibling;
+    }
+    return next as HTMLElement;
+};
+
 export const prepareInlineElementBoundaryMutation = (range: Range) => {
     const ancestor = range.commonAncestorContainer;
     const root = ancestor.nodeType === Node.ELEMENT_NODE ? ancestor as HTMLElement : ancestor.parentElement;
@@ -109,7 +124,10 @@ export const prepareInlineElementBoundaryMutation = (range: Range) => {
     if (inline) {
         elements.unshift(inline);
     }
-    const selected = elements.filter(element => range.intersectsNode(element));
+    // 光标位于元素外部占位符时，输入或分段也会改变该占位符与元素的相邻关系。
+    const boundaries = [getInlineBoundaryAtPoint(range.startContainer, range.startOffset),
+        getInlineBoundaryAtPoint(range.endContainer, range.endOffset)];
+    const selected = elements.filter(element => boundaries.includes(element) || range.intersectsNode(element));
     if (selected.length === 0) {
         return;
     }

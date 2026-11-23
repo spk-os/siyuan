@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package sql
 
@@ -207,6 +195,20 @@ func TestAttributeViewRefsIgnoreLegacyPlainTextAndDerivedValues(t *testing.T) {
 
 	if refs := attributeViewRefs(tree, databaseNode, attrView); 0 != len(refs) {
 		t.Fatalf("legacy or derived values produced attribute view references: %+v", refs)
+	}
+}
+
+func TestAttributeViewRefsIncludeLaterPrimaryBlocks(t *testing.T) {
+	const defID = "20260904010002-def0001"
+	tree := &parse.Tree{Root: &ast.Node{Type: ast.NodeDocument}, ID: "root", Box: "box", Path: "/root.sy"}
+	databaseNode := &ast.Node{Type: ast.NodeAttributeView, ID: "database"}
+	value := &av.Value{Type: av.KeyTypeBlock, Block: &av.ValueBlock{Rich: &av.ValuePrimaryRich{
+		Spec: 1, Format: "kramdown", Content: "first\n\n- ((" + defID + " 'later reference'))",
+	}}}
+	view := &av.AttributeView{KeyValues: []*av.KeyValues{{Key: &av.Key{Type: av.KeyTypeBlock}, Values: []*av.Value{value}}}}
+	refs := attributeViewRefs(tree, databaseNode, view)
+	if len(refs) != 1 || refs[0].DefBlockID != defID || refs[0].BlockID != databaseNode.ID || refs[0].Content != "later reference" {
+		t.Fatalf("later primary block missing from carrier reference index: %+v", refs)
 	}
 }
 

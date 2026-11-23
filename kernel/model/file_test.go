@@ -1,23 +1,13 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
 import (
 	"errors"
+	"maps"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -43,10 +33,12 @@ type fileOperationTestFixture struct {
 	childID    string
 }
 
-func setupFileOperationTest(t *testing.T) *fileOperationTestFixture {
+func setupFileOperationTest(t testing.TB) *fileOperationTestFixture {
 	originalConf := Conf
 	originalDataDir := util.DataDir
 	originalBlockTreeDBPath := util.BlockTreeDBPath
+	originalQueueDir := util.QueueDir
+	originalConfDir := util.ConfDir
 	const testLang = "file-operation-test"
 	originalTimeLang, hadTimeLang := util.TimeLangs[testLang]
 	util.TimeLangs[testLang] = map[string]any{
@@ -58,11 +50,13 @@ func setupFileOperationTest(t *testing.T) *fileOperationTestFixture {
 	tempDir := t.TempDir()
 	util.DataDir = filepath.Join(tempDir, "data")
 	util.BlockTreeDBPath = filepath.Join(tempDir, "blocktree.db")
+	util.QueueDir = t.TempDir()
+	util.ConfDir = t.TempDir()
 	Conf = NewAppConf()
 	Conf.Lang = testLang
-	Conf.FileTree = conf.NewFileTree()
+	Conf.FileTree.Store(conf.NewFileTree())
 	Conf.NotebookCrypto = conf.NewNotebookCrypto()
-	Conf.Sync = conf.NewSync()
+	Conf.Sync.Store(conf.NewSync())
 
 	box := &Box{ID: "20260718000000-abcdefg"}
 	boxConf := conf.NewBoxConf()
@@ -85,6 +79,10 @@ func setupFileOperationTest(t *testing.T) *fileOperationTestFixture {
 	}
 
 	t.Cleanup(func() {
+		FlushTxQueue()
+		backgroundRefreshWaitGroup.Wait()
+		// 测试文档即将删除，其待处理索引不能留给后续用例刷新。
+		sql.ClearQueue()
 		cache.RemoveTreeData(sourceTree.ID)
 		cache.RemoveTreeData(targetTree.ID)
 		cache.RemoveDocIAL(sourceTree.Path)
@@ -98,6 +96,8 @@ func setupFileOperationTest(t *testing.T) *fileOperationTestFixture {
 		Conf = originalConf
 		util.DataDir = originalDataDir
 		util.BlockTreeDBPath = originalBlockTreeDBPath
+		util.QueueDir = originalQueueDir
+		util.ConfDir = originalConfDir
 		if "" != originalBlockTreeDBPath {
 			treenode.InitBlockTree(false)
 		}
@@ -133,7 +133,10 @@ func addFileOperationTestDoc(t *testing.T, fixture *fileOperationTestFixture, id
 
 func TestListDocTreeUsesPathIDForInvalidPropertiesID(t *testing.T) {
 	fixture := setupFileOperationTest(t)
-	ial := filesys.DocIAL(filepath.Join(util.DataDir, fixture.box.ID, fixture.sourcePath))
+	ial, err := filesys.DocIAL(filepath.Join(util.DataDir, fixture.box.ID, fixture.sourcePath))
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name string
 		id   string
@@ -146,9 +149,7 @@ func TestListDocTreeUsesPathIDForInvalidPropertiesID(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			invalidIAL := make(map[string]string, len(ial))
-			for key, value := range ial {
-				invalidIAL[key] = value
-			}
+			maps.Copy(invalidIAL, ial)
 			if "" == test.id {
 				delete(invalidIAL, "id")
 			} else {
@@ -176,9 +177,93 @@ func TestListDocTreeUsesPathIDForInvalidPropertiesID(t *testing.T) {
 	}
 }
 
+func TestDocIALPreservesUnsupportedSpec(t *testing.T) {
+	fixture := setupFileOperationTest(t)
+	originalWorkspace := util.WorkspaceDir
+	util.WorkspaceDir = t.TempDir()
+	t.Cleanup(func() { util.WorkspaceDir = originalWorkspace })
+	absPath := filepath.Join(util.DataDir, fixture.box.ID, fixture.sourcePath)
+	for _, source := range []string{
+		`{"Spec":"999","Properties":{"title":"Future"}}`,
+		`{"Properties":{"title":"Future"},"Spec":"999"}`,
+		`{"Spec":"999","Properties":{}}`,
+		`{"Properties":{"title":{"text":"Future"}},"Spec":"999"}`,
+		`{"Spec":"999","Properties":{"title":"Future"},"Children":[`,
+		`{"Properties":{"title":"Future"},"Spec":"999","Children":[`,
+		`{"Spec":"999","Properties":{"title":`,
+		`{"Properties":{"title":"Invalid version"},"Spec":{}}`,
+	} {
+		cache.RemoveDocIALInBox(fixture.sourcePath, fixture.box.ID)
+		if err := os.WriteFile(absPath, []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if properties := fixture.box.docIAL(fixture.sourcePath); properties != nil {
+			t.Fatalf("unsupported source returned properties: %v", properties)
+		}
+		retained, err := os.ReadFile(absPath)
+		if err != nil || string(retained) != source {
+			t.Fatalf("unsupported source was changed or quarantined: %v", err)
+		}
+		if properties := cache.GetDocIALInBox(fixture.sourcePath, fixture.box.ID); properties != nil {
+			t.Fatalf("unsupported source published cached properties: %v", properties)
+		}
+		if _, err = os.Stat(filepath.Join(util.WorkspaceDir, "corrupted")); !os.IsNotExist(err) {
+			t.Fatalf("version error entered corruption recovery: %v", err)
+		}
+	}
+}
+
+func TestListDocTreeShowsNewerSpecAsPlaceholder(t *testing.T) {
+	fixture := setupFileOperationTest(t)
+	originalWorkspace := util.WorkspaceDir
+	util.WorkspaceDir = t.TempDir()
+	t.Cleanup(func() { util.WorkspaceDir = originalWorkspace })
+	absPath := filepath.Join(util.DataDir, fixture.box.ID, fixture.sourcePath)
+	for _, test := range []struct {
+		name      string
+		source    string
+		wantName  string
+		wantEmpty bool
+	}{
+		{"title", `{"Spec":"999","Properties":{"title":"Future"}}`, "Future", false},
+		{"escaped title", `{"Spec":"999","Properties":{"title":"A &amp; B"}}`, "A & B", false},
+		{"no title", `{"Spec":"999","Properties":{"id":"` + fixture.sourceID + `"}}`, "", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cache.RemoveDocIALInBox(fixture.sourcePath, fixture.box.ID)
+			if err := os.WriteFile(absPath, []byte(test.source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			files, _, err := ListDocTree(fixture.box.ID, "/", util.SortModeNameASC, false, false, 128)
+			if err != nil {
+				t.Fatalf("list documents failed: %v", err)
+			}
+			var found *File
+			for _, file := range files {
+				if fixture.sourceID == file.ID {
+					found = file
+					break
+				}
+			}
+			if found == nil || !found.SpecTooNew {
+				t.Fatalf("newer spec document was not listed as a placeholder: %+v", found)
+			}
+			if found.Name != test.wantName || found.TitleEmpty != test.wantEmpty {
+				t.Fatalf("placeholder title mismatch: name=%q empty=%v", found.Name, found.TitleEmpty)
+			}
+			if properties := cache.GetDocIALInBox(fixture.sourcePath, fixture.box.ID); properties != nil {
+				t.Fatalf("placeholder properties entered the document property cache: %v", properties)
+			}
+			if _, statErr := os.Stat(filepath.Join(util.WorkspaceDir, "corrupted")); !os.IsNotExist(statErr) {
+				t.Fatalf("newer spec entered corruption recovery: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestResolveDocTreeSortModeInheritance(t *testing.T) {
 	fixture := setupFileOperationTest(t)
-	Conf.FileTree.Sort = util.SortModeSizeDESC
+	Conf.FileTree.Load().Sort = util.SortModeSizeDESC
 	boxConf := fixture.box.GetConf()
 	boxConf.SortMode = util.SortModeCreatedASC
 	if err := fixture.box.SaveConf(boxConf); nil != err {
@@ -257,8 +342,8 @@ func TestResolveDocTreeSortModeInheritance(t *testing.T) {
 
 func TestCustomSortMaintenanceIgnoresEffectiveModeAndListLimit(t *testing.T) {
 	fixture := setupFileOperationTest(t)
-	Conf.FileTree.Sort = util.SortModeNameASC
-	Conf.FileTree.MaxListCount = 1
+	Conf.FileTree.Load().Sort = util.SortModeNameASC
+	Conf.FileTree.Load().MaxListCount = 1
 	boxConf := fixture.box.GetConf()
 	boxConf.SortMode = util.SortModeFileTree
 	if err := fixture.box.SaveConf(boxConf); nil != err {
@@ -294,8 +379,8 @@ func TestCustomSortMaintenanceIgnoresEffectiveModeAndListLimit(t *testing.T) {
 	if nil != err {
 		t.Fatalf("read custom sort after append failed: %v", err)
 	}
-	if 4 != sorts[maxID] {
-		t.Fatalf("append used effective display mode instead of complete custom order: got %d, want 4", sorts[maxID])
+	if 31 != sorts[maxID] || sorts[extraID] != 30 {
+		t.Fatalf("append did not preserve existing custom values: %v", sorts)
 	}
 
 	minID := "20260718000005-abcdefg"
@@ -305,7 +390,7 @@ func TestCustomSortMaintenanceIgnoresEffectiveModeAndListLimit(t *testing.T) {
 	if nil != err {
 		t.Fatalf("read custom sort after prepend failed: %v", err)
 	}
-	if 1 != sorts[minID] || 5 != sorts[maxID] {
+	if 9 != sorts[minID] || 31 != sorts[maxID] {
 		t.Fatalf("prepend did not preserve the complete custom order: prepend=%d, trailing=%d", sorts[minID], sorts[maxID])
 	}
 
@@ -324,7 +409,7 @@ func TestCustomSortMaintenanceIgnoresEffectiveModeAndListLimit(t *testing.T) {
 
 func TestReorderDocsUsesCompleteSiblingOrder(t *testing.T) {
 	fixture := setupFileOperationTest(t)
-	Conf.FileTree.MaxListCount = 2
+	Conf.FileTree.Load().MaxListCount = 2
 	hiddenTree := addFileOperationTestDoc(t, fixture, "20260718000003-abcdefg", "Hidden", true)
 	unlistedTree := addFileOperationTestDoc(t, fixture, "20260718000004-abcdefg", "Unlisted", false)
 	confPath := filepath.Join(util.DataDir, fixture.box.ID, ".siyuan", "sort.json")
@@ -464,15 +549,15 @@ func assertNotebookCustomOrder(t *testing.T, expected []string) {
 
 func TestGetDocOptionallyIncludesDocInfo(t *testing.T) {
 	fixture := setupFileOperationTest(t)
-	Conf.Editor = conf.NewEditor()
-	Conf.Export = conf.NewExport()
+	Conf.Editor.Store(conf.NewEditor())
+	Conf.Export.Store(conf.NewExport())
 	expected, err := GetDocInfo(fixture.sourceID)
 	if nil != err {
 		t.Fatalf("get standalone document info failed: %v", err)
 	}
 
 	_, _, _, _, rootID, _, _, _, boxID, _, _, _, _, embedded, err := GetDoc(
-		"", "", fixture.sourceID, 0, "", nil, nil, 0, 0, 102400, false, map[string]string{}, true, true)
+		"", "", fixture.sourceID, 0, "", nil, nil, 0, 0, 102400, false, map[string]string{}, true, true, false)
 	if nil != err {
 		t.Fatalf("get document with embedded info failed: %v", err)
 	}
@@ -484,7 +569,7 @@ func TestGetDocOptionallyIncludesDocInfo(t *testing.T) {
 	}
 
 	_, _, _, _, _, _, _, _, _, _, _, _, _, omitted, err := GetDoc(
-		"", "", fixture.sourceID, 0, "", nil, nil, 0, 0, 102400, false, map[string]string{}, true, false)
+		"", "", fixture.sourceID, 0, "", nil, nil, 0, 0, 102400, false, map[string]string{}, true, false, false)
 	if nil != err {
 		t.Fatalf("get document without embedded info failed: %v", err)
 	}
@@ -522,8 +607,8 @@ func TestValidateCreateDocDoesNotWrite(t *testing.T) {
 	}
 
 	invalidChildPath := path.Join(fixture.targetPath, newID+".sy")
-	if err := ValidateCreateDoc(fixture.box.ID, invalidChildPath, "Invalid child"); !errors.Is(err, ErrBlockNotFound) {
-		t.Fatalf("expected parent path with .sy suffix to return ErrBlockNotFound, got [%v]", err)
+	if err := ValidateCreateDoc(fixture.box.ID, invalidChildPath, "Invalid child"); err == nil || !strings.Contains(err.Error(), "invalid document path") {
+		t.Fatalf("expected parent path with .sy suffix to fail path validation, got [%v]", err)
 	}
 
 	wrongParentPath := path.Join(strings.TrimSuffix(fixture.sourcePath, ".sy"), strings.TrimSuffix(fixture.targetPath, ".sy"), newID+".sy")
@@ -828,7 +913,10 @@ func TestPerformCreateDocTransactionSyncReturnsWriteError(t *testing.T) {
 
 func TestCreateDocByMdSyncReturnsWriteError(t *testing.T) {
 	fixture := setupFileOperationTest(t)
-	docID := "20260718000009-abcdefg\x00"
+	docID := "20260718000009-abcdefg"
+	if err := os.WriteFile(filepath.Join(util.QueueDir, "document-sources"), []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	tree, err := CreateDocByMdSync(fixture.box.ID, "/"+docID+".sy", "Inbox", "Keep the cloud original", nil, nil)
 	if tree == nil {
 		t.Fatal("expected document validation to succeed before the filesystem write fails")
@@ -838,6 +926,21 @@ func TestCreateDocByMdSyncReturnsWriteError(t *testing.T) {
 	}
 	if bt := treenode.GetBlockTree(docID); bt != nil {
 		t.Fatal("failed document remains in the block tree")
+	}
+	if fixture.box.Exist("/" + docID + ".sy") {
+		t.Fatal("failed document was persisted")
+	}
+}
+
+func TestCreateDocByMdSyncRejectsInvalidPath(t *testing.T) {
+	fixture := setupFileOperationTest(t)
+	docID := "20260718000009-abcdefg\x00"
+	tree, err := CreateDocByMdSync(fixture.box.ID, "/"+docID+".sy", "Inbox", "Keep the cloud original", nil, nil)
+	if tree != nil || err == nil || !strings.Contains(err.Error(), "invalid document path") {
+		t.Fatalf("invalid path must fail before creating a tree: tree=%v, error=%v", tree, err)
+	}
+	if bt := treenode.GetBlockTree(docID); bt != nil {
+		t.Fatal("invalid document remains in the block tree")
 	}
 }
 

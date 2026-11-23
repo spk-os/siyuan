@@ -1,4 +1,4 @@
-import {escapeHtml} from "../../../util/escape";
+import {escapeHtml, escapeHtmlTextAndAttr} from "../../../util/escape";
 import {processSiYuanUri} from "../../../util/uri";
 import {highlightRender} from "../../../protyle/render/highlightRender";
 import {mathRender} from "../../../protyle/render/mathRender";
@@ -50,24 +50,27 @@ export const renderTodoList = (result: string): string => {
 };
 
 // hasModel=false 时渲染"未配置模型"提示块替代示例，避免用户点击示例后卡死。
-export const renderWelcomeHTML = (hasModel = true): string => {
+export const renderWelcomeHTML = (hasModel = true, greetingKey = ""): string => {
     const L = window.siyuan.languages;
+    const greeting = escapeHtmlTextAndAttr(L[greetingKey] || L.agentWelcomeGreeting || "Hello, I am SiYuan Agent");
     if (!hasModel) {
         return '<div class="agent-welcome">' +
-            '<div class="agent-welcome__greeting">' + (L.agentWelcomeGreeting || "Hello, I am SiYuan Agent") + "</div>" +
+            '<div class="agent-welcome__greeting">' + greeting + "</div>" +
             '<div class="agent-welcome__no-model">' +
             '<div class="agent-welcome__no-model-title">' + (L.agentNoModel || "No model configured") + "</div>" +
             '<div class="agent-welcome__no-model-tip">' + L.agentNoModelTip + "</div>" +
             '<button class="b3-button agent-welcome__go-setting" data-type="go-ai-setting">' + (L.agentGoToSetting || "Go to Settings") + "</button>" +
+            '<div class="fn__hr"></div><button class="b3-button b3-button--outline" data-type="go-chatgpt">' + L.chatGPTConnect + "</button>" +
             "</div>" +
             "</div>";
     }
     return '<div class="agent-welcome">' +
-        '<div class="agent-welcome__greeting">' + (L.agentWelcomeGreeting || "Hello, I am SiYuan Agent") + "</div>" +
+        '<div class="agent-welcome__greeting">' + greeting + "</div>" +
         '<div class="agent-welcome__examples">' +
         '<div class="agent-welcome__example" data-text="' + escapeHtml(L.agentExample1 || "") + '">' + (L.agentExample1 || "") + "</div>" +
         '<div class="agent-welcome__example" data-text="' + escapeHtml(L.agentExample2 || "") + '">' + (L.agentExample2 || "") + "</div>" +
         '<div class="agent-welcome__example" data-text="' + escapeHtml(L.agentExample3 || "") + '">' + (L.agentExample3 || "") + "</div>" +
+        '<div class="agent-welcome__example" data-text="' + escapeHtmlTextAndAttr(L.agentExample4 || "") + '">' + escapeHtmlTextAndAttr(L.agentExample4 || "") + "</div>" +
         "</div>" +
         "</div>";
 };
@@ -101,7 +104,7 @@ export const renderQuestionCardHTML = (rawQuestions: Array<Record<string, unknow
             const label = (opt.label as string) || "";
             const desc = (opt.description as string) || "";
             html += '<label class="agent-chat__question-option">' +
-                '<input type="' + inputType + '" name="' + inputName + '" value="' + escapeHtml(label) + '">' +
+                '<input type="' + inputType + '" name="' + inputName + '" value="' + escapeHtmlTextAndAttr(label) + '">' +
                 '<span class="agent-chat__question-option-content">' +
                 '<span class="agent-chat__question-option-label">' + escapeHtml(label) + "</span>";
             if (desc) {
@@ -140,44 +143,6 @@ export const renderToolsLineHTML = (newTools: Array<{ name: string; running?: bo
     }
     detailLines += "</div>";
     return detailLines;
-};
-
-// createThinkingCardElement 用于流式过程中的单个思考卡片。
-// 工具调用只接收名字列表（arguments/result 在 assistant entry 存一份）；
-// 标题文本由调用方传入（已通过 i18n 从 duration 生成）。
-export const createThinkingCardElement = (step: {
-    reasoning: string;
-    text: string;
-    toolNames?: string[];
-    reasoningContent: string
-}): HTMLElement => {
-    let detail = "";
-    if (step.toolNames && step.toolNames.length > 0) {
-        detail += '<div class="agent-chat__thinking-tools-line"><span class="agent-chat__thinking-summary">Tool calls:</span>';
-        for (let j = 0; j < step.toolNames.length; j++) {
-            detail += '<span class="agent-chat__thinking-tool">' + escapeHtml(step.toolNames[j]) + "</span>";
-        }
-        detail += "</div>";
-    }
-    if (step.reasoningContent) {
-        detail += "<div>" + escapeHtml(step.reasoningContent) + "</div>";
-    }
-
-    const el = document.createElement("div");
-    el.className = "agent-chat__msg agent-chat__msg--thinking agent-chat__msg--thinking-done";
-    el.innerHTML = '<div class="agent-chat__thinking-card">' +
-        '<div class="agent-chat__thinking-header">' +
-        '<span class="agent-chat__thinking-arrow">' +
-        '<svg class="agent-chat__thinking-arrow--expand"><use xlink:href="#iconExpand"></use></svg>' +
-        '<svg class="agent-chat__thinking-arrow--contract fn__none"><use xlink:href="#iconContract"></use></svg>' +
-        "</span>" +
-        '<span class="agent-chat__thinking-text">' + escapeHtml(step.text) + "</span>" +
-        "</div>" +
-        '<div class="agent-chat__thinking-body">' +
-        detail +
-        "</div>" +
-        "</div>";
-    return el;
 };
 
 // 为容器内所有代码块（pre）和公式块（div[data-subtype=math]）注入复制按钮。

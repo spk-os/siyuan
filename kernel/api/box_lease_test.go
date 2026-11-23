@@ -1,20 +1,8 @@
-//go:build (sqlcipher || libsqlcipher) && cgo
-
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//go:build (sqlcipher || libsqlcipher) && cgo
 
 package api
 
@@ -81,7 +69,47 @@ func TestContractDocInfoNotebookResponseLease(t *testing.T) {
 	runNotebookResponseLease(t, true, false)
 }
 
+func TestContractDocTitleNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractDailyNoteNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractDailyNoteInfoNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractDocumentPathsNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractResolveDocumentPathNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractCreateDocumentByParentNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractDocumentCreateTargetNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractDocumentCreatePlanNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
 func TestContractGetDocNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractDocTreeRangeNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractDocTreeLocateNotebookResponseLease(t *testing.T) {
 	runNotebookResponseLease(t, true, false)
 }
 
@@ -145,6 +173,18 @@ func TestContractBatchIndexesNotebookResponseLease(t *testing.T) {
 	runNotebookResponseLease(t, false, true)
 }
 
+func TestContractCheckBlocksExistNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, false, false)
+}
+
+func TestContractCheckBlocksExistExplicitNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, true, false)
+}
+
+func TestContractCheckBlocksExistBatchNotebookResponseLease(t *testing.T) {
+	runNotebookResponseLease(t, false, true)
+}
+
 func runNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 	t.Helper()
 	if os.Getenv("SIYUAN_TEST_NOTEBOOK_RESPONSE_LEASE") == t.Name() {
@@ -179,9 +219,40 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 		}
 	}
 	model.Conf = model.NewAppConf()
-	model.Conf.NotebookCrypto, model.Conf.Sync, model.Conf.FileTree = conf.NewNotebookCrypto(), conf.NewSync(), conf.NewFileTree()
-	model.Conf.Editor, model.Conf.Export, model.Conf.Search = conf.NewEditor(), conf.NewExport(), conf.NewSearch()
-	*model.Conf.FileTree.BoxDocEnabled = true
+	{
+		confSectionValue0, confSectionValue1, confSectionValue2 := conf.NewNotebookCrypto(), conf.NewSync(), conf.NewFileTree()
+		model.Conf.NotebookCrypto = confSectionValue0
+		model.Conf.Sync.Store(confSectionValue1)
+		model.Conf.FileTree.Store(confSectionValue2)
+	}
+	{
+		confSectionValue0, confSectionValue1, confSectionValue2 := conf.NewEditor(), conf.NewExport(), conf.NewSearch()
+		model.Conf.Editor.Store(confSectionValue0)
+		model.Conf.Export.Store(confSectionValue1)
+		model.Conf.Search.Store(confSectionValue2)
+	}
+	docTreeTest := t.Name() == "TestContractDocTreeRangeNotebookResponseLease" || t.Name() == "TestContractDocTreeLocateNotebookResponseLease"
+	addressingTest := docTreeTest || t.Name() == "TestContractDocumentPathsNotebookResponseLease" ||
+		t.Name() == "TestContractResolveDocumentPathNotebookResponseLease" ||
+		t.Name() == "TestContractDocumentCreateTargetNotebookResponseLease" ||
+		t.Name() == "TestContractDocumentCreatePlanNotebookResponseLease" ||
+		t.Name() == "TestContractCreateDocumentByParentNotebookResponseLease"
+	titleReplay := t.Name() == "TestContractDocTitleUndoNotebookResponseLease" || t.Name() == "TestContractDocTitleRedoNotebookResponseLease"
+	if addressingTest || titleReplay || t.Name() == "TestContractDailyNoteNotebookResponseLease" || t.Name() == "TestContractDailyNoteInfoNotebookResponseLease" {
+		content, err := os.ReadFile(filepath.Join("..", "..", "app", "appearance", "langs", "en.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var language struct {
+			Time map[string]any `json:"_time"`
+		}
+		if err := json.Unmarshal(content, &language); err != nil {
+			t.Fatal(err)
+		}
+		model.Conf.Lang = "en"
+		util.TimeLangs = map[string]map[string]any{"en": language.Time}
+	}
+	model.Conf.FileTree.Load().BoxDocEnabled = true
 	sql.InitDatabase(true)
 	sql.InitHistoryDatabase(true)
 	sql.InitAssetContentDatabase(true)
@@ -194,6 +265,7 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 		count = 2
 	}
 	var boxIDs []string
+	const docTreeID = "20261026000000-lease01"
 	for range count {
 		boxID, err := model.CreateEncryptedBox("Response lease", "review-password")
 		if err != nil {
@@ -215,6 +287,29 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 			t.Fatal(err)
 		}
 		treenode.UpsertBlockTree(tree)
+		if docTreeTest {
+			document := treenode.NewTree(boxID, "/"+docTreeID+".sy", "/Lease", "REVIEW-SECRET-CONTENT")
+			if _, err := filesys.WriteTree(document); err != nil {
+				t.Fatal(err)
+			}
+			treenode.UpsertBlockTree(document)
+		}
+		if addressingTest || titleReplay || t.Name() == "TestContractDailyNoteNotebookResponseLease" || t.Name() == "TestContractDailyNoteInfoNotebookResponseLease" {
+			if _, err := model.Mount(boxID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if addressingTest {
+			if err := treenode.SetDocumentMetadataState(boxID, "ready"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if t.Name() == "TestContractDocumentPathsNotebookResponseLease" {
+			tree.Root.SetIALAttr("icon", "REVIEW-SECRET-ICON")
+			if _, err = filesys.WriteTree(tree); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -224,7 +319,17 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 	engine.POST("/api/block/getRefIDs", getRefIDs)
 	engine.POST("/api/block/checkBlockRef", checkBlockRef)
 	engine.POST("/api/block/getDocInfo", getDocInfo)
+	engine.POST("/api/block/getDocTitle", getDocTitle)
+	engine.POST("/api/filetree/createDailyNote", createDailyNote)
+	engine.POST("/api/filetree/getDailyNoteInfo", getDailyNoteInfo)
+	engine.POST("/api/filetree/getDocPaths", getDocPaths)
+	engine.POST("/api/filetree/resolveDocPath", resolveDocPath)
+	engine.POST("/api/filetree/createDocByParent", createDocByParent)
+	engine.POST("/api/filetree/getDocCreateTarget", getDocCreateTarget)
+	engine.POST("/api/filetree/planDocCreate", planDocCreate)
 	engine.POST("/api/filetree/getDoc", getDoc)
+	engine.POST("/api/filetree/listDocTreeRange", listDocTreeRange)
+	engine.POST("/api/filetree/locateDocTreeItem", locateDocTreeItem)
 	engine.POST("/api/block/getTreeStat", getTreeStat)
 	engine.POST("/api/block/getBlockBreadcrumb", getBlockBreadcrumb)
 	engine.POST("/api/block/getBlockBreadcrumbChildren", getBlockBreadcrumbChildren)
@@ -239,6 +344,9 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 	engine.POST("/api/block/getBlockInfo", getBlockInfo)
 	engine.POST("/api/block/getBlockSiblingID", getBlockSiblingID)
 	engine.POST("/api/block/getBlocksIndexes", getBlocksIndexes)
+	engine.POST("/api/block/checkBlocksExist", checkBlocksExist)
+	engine.POST("/api/transactions/undo", performUndo)
+	engine.POST("/api/transactions/redo", performRedo)
 	engine.POST("/review/blockSwapLease", func(c *gin.Context) {
 		tx := &model.Transaction{DoOperations: []*model.Operation{{Action: "swapBlockRef"}}}
 		if err := holdBlockSwapReplayRequests(c, tx, boxIDs); err != nil {
@@ -247,6 +355,10 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 		}
 		c.JSON(http.StatusOK, map[string]int{"code": 0})
 	})
+	titleID := ""
+	if titleReplay {
+		titleID = prepareDocumentTitleReplayLease(t, engine, boxIDs[0], t.Name() == "TestContractDocTitleRedoNotebookResponseLease")
+	}
 	writer := &blockedBlockResponseWriter{ResponseRecorder: httptest.NewRecorder(), ready: make(chan []byte, 1), proceed: make(chan struct{})}
 	var releaseWriter sync.Once
 	defer releaseWriter.Do(func() { close(writer.proceed) })
@@ -265,6 +377,28 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 	}
 	typedQuery := false
 	switch t.Name() {
+	case "TestContractDocTreeRangeNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/listDocTreeRange", true
+		args = map[string]any{"notebook": boxIDs[0], "parentID": "", "offset": 0, "limit": 1}
+	case "TestContractDocTreeLocateNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/locateDocTreeItem", true
+		args = map[string]any{"notebook": boxIDs[0], "id": docTreeID}
+	case "TestContractDocumentCreateTargetNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/getDocCreateTarget", true
+		args = map[string]any{"notebook": boxIDs[0], "purpose": "document"}
+	case "TestContractDocumentCreatePlanNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/planDocCreate", true
+		args = map[string]any{"notebook": boxIDs[0], "purpose": "document", "id": ast.NewNodeID(), "title": "REVIEW-SECRET-TITLE"}
+	case "TestContractDocumentPathsNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/getDocPaths", true
+		args = map[string]any{"notebook": boxIDs[0], "ids": []string{boxIDs[0]}, "includeIcons": true}
+	case "TestContractResolveDocumentPathNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/resolveDocPath", true
+		args = map[string]any{"notebook": boxIDs[0], "start": map[string]any{"kind": "document", "id": boxIDs[0]}, "segments": []string{}}
+	case "TestContractCreateDocumentByParentNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/createDocByParent", true
+		args = map[string]any{"notebook": boxIDs[0], "parentID": nil, "id": ast.NewNodeID(),
+			"title": map[string]string{"format": "plain", "text": "REVIEW-SECRET-TITLE"}, "markdown": "REVIEW-SECRET-CONTENT"}
 	case "TestContractBlockSwapReplayNotebookResponseLease":
 		endpoint, typedQuery = "/review/blockSwapLease", true
 	case "TestContractCheckBlockRefNotebookResponseLease":
@@ -277,6 +411,20 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 		args["scope"] = "notebook"
 	case "TestContractDocInfoNotebookResponseLease":
 		endpoint, typedQuery = "/api/block/getDocInfo", true
+	case "TestContractDocTitleNotebookResponseLease":
+		endpoint, typedQuery = "/api/block/getDocTitle", true
+	case "TestContractDocTitleUndoNotebookResponseLease", "TestContractDocTitleRedoNotebookResponseLease":
+		endpoint, typedQuery = "/api/transactions/undo", true
+		if t.Name() == "TestContractDocTitleRedoNotebookResponseLease" {
+			endpoint = "/api/transactions/redo"
+		}
+		args = map[string]any{"rootID": titleID, "app": "lease-test", "session": "lease-test"}
+	case "TestContractDailyNoteNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/createDailyNote", true
+		args["date"] = "2024-02-29"
+	case "TestContractDailyNoteInfoNotebookResponseLease":
+		endpoint, typedQuery = "/api/filetree/getDailyNoteInfo", true
+		args["date"] = "2024-02-29"
 	case "TestContractGetDocNotebookResponseLease":
 		endpoint, typedQuery = "/api/filetree/getDoc", true
 	case "TestContractTreeStatNotebookResponseLease":
@@ -306,6 +454,10 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 		endpoint, typedQuery = "/api/block/getBlockSiblingID", true
 	case "TestContractBatchIndexesNotebookResponseLease":
 		endpoint, typedQuery = "/api/block/getBlocksIndexes", true
+	case "TestContractCheckBlocksExistNotebookResponseLease", "TestContractCheckBlocksExistExplicitNotebookResponseLease", "TestContractCheckBlocksExistBatchNotebookResponseLease":
+		endpoint, typedQuery = "/api/block/checkBlocksExist", true
+		delete(args, "id")
+		args["ids"] = boxIDs
 	}
 	requestBody, err := json.Marshal(args)
 	if err != nil {
@@ -321,10 +473,32 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("response never reached writer")
 	}
+	if t.Name() == "TestContractDocumentPathsNotebookResponseLease" && !strings.Contains(string(body), "REVIEW-SECRET-ICON") {
+		releaseWriter.Do(func() { close(writer.proceed) })
+		<-responseDone
+		t.Fatalf("notebook document icon was omitted: %s", body)
+	}
 	if (!typedQuery || t.Name() == "TestContractGetDocNotebookResponseLease") && strings.Count(string(body), "REVIEW-SECRET-CONTENT") != count {
 		releaseWriter.Do(func() { close(writer.proceed) })
 		<-responseDone
 		t.Fatalf("fixture did not produce plaintext: %s", body)
+	}
+	if endpoint == "/api/block/checkBlocksExist" {
+		var response struct {
+			Code int             `json:"code"`
+			Data map[string]bool `json:"data"`
+		}
+		if err := json.Unmarshal(body, &response); err != nil || response.Code != 0 {
+			t.Fatalf("existence query failed: %s, %v", body, err)
+		}
+		for _, boxID := range boxIDs {
+			if !response.Data[boxID] {
+				t.Fatalf("unlocked notebook block was not found: %s", body)
+			}
+		}
+	}
+	if titleReplay {
+		requireDocumentTitleReplayResponse(t, body)
 	}
 	lockDone := make(chan string, len(boxIDs))
 	for _, boxID := range boxIDs {
@@ -371,6 +545,35 @@ func testNotebookResponseLease(t *testing.T, explicitNotebook, batch bool) {
 	}
 	if lockedBeforeResponse {
 		t.Fatalf("lock completed before plaintext response was sent: %s", writer.Body.String())
+	}
+	if titleReplay {
+		lockedEndpoint := "/api/transactions/redo"
+		if endpoint == lockedEndpoint {
+			lockedEndpoint = "/api/transactions/undo"
+		}
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, lockedEndpoint, strings.NewReader(string(requestBody)))
+		request.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(recorder, request)
+		requireAPIContract(t, http.MethodPost, lockedEndpoint, recorder)
+		var response struct {
+			Data struct{ Failed bool }
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || !response.Data.Failed ||
+			strings.Contains(recorder.Body.String(), "REVIEW-SECRET-TITLE") {
+			t.Fatalf("locked title replay returned source data: %s, %v", recorder.Body.String(), err)
+		}
+	}
+	if docTreeTest || t.Name() == "TestContractDailyNoteNotebookResponseLease" || t.Name() == "TestContractDailyNoteInfoNotebookResponseLease" {
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(requestBody))))
+		requireAPIContract(t, http.MethodPost, endpoint, recorder)
+		var response struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Code != -1 {
+			t.Fatalf("locked notebook daily note creation was admitted: %s, %v", recorder.Body.String(), err)
+		}
 	}
 	if t.Name() == "TestGetBlockInfoNotebookResponseLease" {
 		for _, explicit := range []bool{false, true} {

@@ -3,7 +3,7 @@ const path = require("node:path");
 const {createRequire} = require("node:module");
 
 async function main() {
-    const [base, kernel, output, thumbprint, destination] = process.argv.slice(2);
+    const [base, kernel, output, thumbprint, destination, sign] = process.argv.slice(2);
     if (!base || !kernel || !output || !/^[0-9a-f]{40}$/i.test(thumbprint || "") || !destination) {
         throw new Error("Expected base config, kernel directory, output directory, certificate SHA1 and destination");
     }
@@ -17,9 +17,16 @@ async function main() {
     delete config.extends;
     config.directories = {...config.directories, output: path.resolve(output)};
     config.forceCodeSigning = true;
-    config.win.extraResources = [{from: path.resolve(kernel), to: "kernel"}];
+    config.win.extraResources = [
+        ...(config.win.extraResources || []).filter(resource => resource.to !== "kernel"),
+        {from: path.resolve(kernel), to: "kernel"},
+    ];
     config.win.signtoolOptions = {...config.win.signtoolOptions, certificateSha1: thumbprint};
     delete config.win.signtoolOptions.certificateSubjectName;
+    if (sign) {
+        config.win.signtoolOptions.sign = path.resolve(sign);
+        config.win.signtoolOptions.signingHashAlgorithms = ["sha256"];
+    }
     await validateConfiguration(config);
     fs.writeFileSync(destination, JSON.stringify(config, null, 2) + "\n", {encoding: "utf8", flag: "wx"});
 }

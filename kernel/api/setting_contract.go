@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package api
 
 import (
@@ -22,8 +26,21 @@ func settingBazaarPayload(value *conf.Bazaar) *apicontract.SettingBazaar {
 		return nil
 	}
 	result := &apicontract.SettingBazaar{}
+	result.BatchUpdateExcluded = value.BatchUpdateExcluded
 	result.Trust = value.Trust
 	result.PetalDisabled = value.PetalDisabled
+	if value.CompatibilityFilters != nil {
+		result.CompatibilityFilters = make(map[string]*apicontract.SettingBazaarCompatibilityFilter, len(value.CompatibilityFilters))
+		for pkgType, filter := range value.CompatibilityFilters {
+			if filter == nil {
+				result.CompatibilityFilters[pkgType] = nil
+				continue
+			}
+			result.CompatibilityFilters[pkgType] = &apicontract.SettingBazaarCompatibilityFilter{
+				HideUnsupportedVersion: filter.HideUnsupportedVersion, HideIncompatiblePlatform: filter.HideIncompatiblePlatform,
+			}
+		}
+	}
 	return result
 }
 
@@ -32,6 +49,14 @@ func settingAIPayload(value *conf.AI) *apicontract.SettingAI {
 		return nil
 	}
 	result := &apicontract.SettingAI{}
+	if value.Memory != nil {
+		result.Memory = &apicontract.SettingMemory{Enabled: value.Memory.Enabled,
+			ModelID: value.Memory.ModelID, ReasoningEffort: value.Memory.ReasoningEffort}
+	}
+	if value.Web != nil {
+		result.Web = &apicontract.SettingAIWeb{SearchProvider: value.Web.SearchProvider,
+			FetchProvider: value.Web.FetchProvider, APIKey: value.Web.APIKey, ExaAPIKey: value.Web.ExaAPIKey, Timeout: value.Web.Timeout}
+	}
 	result.MCP = settingMCPPayload(value.MCP)
 	result.Embedding = settingEmbeddingPayload(value.Embedding)
 	result.Rerank = settingRerankPayload(value.Rerank)
@@ -106,6 +131,8 @@ func settingEmbeddingPayload(value *conf.Embedding) *apicontract.SettingEmbeddin
 	result.Name = value.Name
 	result.Timeout = value.Timeout
 	result.Dimensions = value.Dimensions
+	result.Concurrency = value.Concurrency
+	result.BatchSize = value.BatchSize
 	return result
 }
 
@@ -129,8 +156,22 @@ func settingDecisionPayload(value *conf.Decision) *apicontract.SettingDecision {
 	if value == nil {
 		return nil
 	}
-	return &apicontract.SettingDecision{Enabled: value.Enabled, Endpoint: value.Endpoint,
-		APIKey: value.APIKey, Name: value.Name, Timeout: value.Timeout}
+	result := &apicontract.SettingDecision{Enabled: value.Enabled, Provider: value.Provider, Endpoint: value.Endpoint, APIKey: value.APIKey, Name: value.Name, Timeout: value.Timeout}
+	if value.Profiles != nil {
+		result.Profiles = map[string]*apicontract.SettingDecisionProfile{}
+	}
+	for provider, profile := range value.Profiles {
+		if profile == nil {
+			result.Profiles[provider] = nil
+		} else {
+			result.Profiles[provider] = &apicontract.SettingDecisionProfile{Endpoint: profile.Endpoint, APIKey: profile.APIKey, Name: profile.Name, Timeout: profile.Timeout}
+		}
+	}
+	// 旧客户端兼容字段固定投影 TypeSafe，不能投影当前供应商的凭证。
+	if profile := value.Profiles["typesafe"]; profile != nil {
+		result.Endpoint, result.APIKey, result.Name, result.Timeout = profile.Endpoint, profile.APIKey, profile.Name, profile.Timeout
+	}
+	return result
 }
 
 func settingAgentPayload(value *conf.Agent) *apicontract.SettingAgent {
@@ -138,6 +179,7 @@ func settingAgentPayload(value *conf.Agent) *apicontract.SettingAgent {
 		return nil
 	}
 	result := &apicontract.SettingAgent{}
+	result.StreamingMarkdown = value.StreamingMarkdown
 	result.ModelID = value.ModelID
 	result.SessionTimeout = value.SessionTimeout
 	result.StreamIdleTimeout = value.StreamIdleTimeout
@@ -183,6 +225,7 @@ func settingAgentSkillsPayload(value *conf.AgentSkills) *apicontract.SettingAgen
 	}
 	result := &apicontract.SettingAgentSkills{}
 	result.UserEnabled = value.UserEnabled
+	result.BuiltinDisabled = value.BuiltinDisabled
 	return result
 }
 
@@ -216,6 +259,8 @@ func settingProviderPayload(value *conf.Provider) *apicontract.SettingProvider {
 		return nil
 	}
 	result := &apicontract.SettingProvider{}
+	result.AuthType = value.AuthType
+	result.AccountID = value.AccountID
 	result.Headers = value.Headers
 	result.ID = value.ID
 	result.DisplayName = value.DisplayName
@@ -346,12 +391,18 @@ func settingEditorPayload(value *conf.Editor) *apicontract.SettingEditor {
 	result.CodeLineWrap = value.CodeLineWrap
 	result.CodeLigatures = value.CodeLigatures
 	result.DisplayBookmarkIcon = value.DisplayBookmarkIcon
+	result.BlockGutterMode = value.BlockGutterMode
 	result.DisplayNetImgMark = value.DisplayNetImgMark
+	result.DisplayImgName = value.DisplayImgName
+	result.DisplayImgAlt = value.DisplayImgAlt
+	result.DatabaseShowIcon = value.DatabaseShowIcon
+	result.DatabaseShowRelationIcon = value.DatabaseShowRelationIcon
 	result.DatabaseAttrShow = value.DatabaseAttrShow
 	result.DatabaseAttrClickMode = value.DatabaseAttrClickMode
 	result.DatabaseAttrViewMode = value.DatabaseAttrViewMode
 	result.DatabaseAttrHideEmpty = value.DatabaseAttrHideEmpty
 	result.DatabaseAttrUseTabs = value.DatabaseAttrUseTabs
+	result.DatabaseAttrLayout = value.DatabaseAttrLayout
 	result.GenerateHistoryInterval = value.GenerateHistoryInterval
 	result.HistoryRetentionDays = value.HistoryRetentionDays
 	result.Emoji = value.Emoji
@@ -366,11 +417,15 @@ func settingEditorPayload(value *conf.Editor) *apicontract.SettingEditor {
 	result.KaTexMacros = value.KaTexMacros
 	result.ReadOnly = value.ReadOnly
 	result.EmbedBlockBreadcrumb = value.EmbedBlockBreadcrumb
+	result.GlobalBreadcrumb = value.GlobalBreadcrumb
+	result.HideBreadcrumbIcons = value.HideBreadcrumbIcons
+	result.EmbedBlockBreadcrumbParentPath = value.EmbedBlockBreadcrumbParentPath
 	result.ListLogicalOutdent = value.ListLogicalOutdent
 	result.ListItemDotNumberClickFocus = value.ListItemDotNumberClickFocus
 	result.FloatWindowMode = value.FloatWindowMode
 	result.FloatWindowDelay = value.FloatWindowDelay
 	result.KeepLoadedContent = value.KeepLoadedContent
+	result.PageScrollButtons = value.PageScrollButtons
 	result.DynamicLoadBlocks = value.DynamicLoadBlocks
 	result.Justify = value.Justify
 	result.RTL = value.RTL
@@ -379,6 +434,7 @@ func settingEditorPayload(value *conf.Editor) *apicontract.SettingEditor {
 	result.SpellcheckLanguages = value.SpellcheckLanguages
 	result.HashTagSearch = value.HashTagSearch
 	result.OnlySearchForDoc = value.OnlySearchForDoc
+	result.AutoCloseRefBrackets = value.AutoCloseRefBrackets
 	result.BacklinkExpandCount = value.BacklinkExpandCount
 	result.BackmentionExpandCount = value.BackmentionExpandCount
 	result.BacklinkMentionExclude = value.BacklinkMentionExclude
@@ -393,6 +449,7 @@ func settingEditorPayload(value *conf.Editor) *apicontract.SettingEditor {
 	result.HeadingNumberFormat = value.HeadingNumberFormat
 	result.HeadingEmbedMode = value.HeadingEmbedMode
 	result.PasteURLAutoConvert = value.PasteURLAutoConvert
+	result.MathDelimiterCompatibility = value.MathDelimiterCompatibility
 	result.DragHTMLFileToIframe = value.DragHTMLFileToIframe
 	result.Markdown = settingMarkdownPayload(value.Markdown)
 	return result
@@ -445,6 +502,7 @@ func settingExportPayload(value *conf.Export) *apicontract.SettingExport {
 		return nil
 	}
 	result := &apicontract.SettingExport{}
+	result.HeadingNumber = value.HeadingNumber
 	result.ParagraphBeginningSpace = value.ParagraphBeginningSpace
 	result.AddTitle = value.AddTitle
 	result.BlockRefMode = value.BlockRefMode
@@ -456,7 +514,6 @@ func settingExportPayload(value *conf.Export) *apicontract.SettingExport {
 	result.FileAnnotationRefMode = value.FileAnnotationRefMode
 	result.PandocBin = value.PandocBin
 	result.PandocParams = value.PandocParams
-	result.DocxTemplate = value.DocxTemplate
 	result.RemoveAssetsID = value.RemoveAssetsID
 	result.MarkdownYFM = value.MarkdownYFM
 	result.InlineMemo = value.InlineMemo
@@ -475,13 +532,18 @@ func settingFileTreePayload(value *conf.FileTree) *apicontract.SettingFileTree {
 		return nil
 	}
 	result := &apicontract.SettingFileTree{}
+	result.RecentDocsSort = value.RecentDocsSort
 	result.AlwaysSelectOpenedFile = value.AlwaysSelectOpenedFile
 	result.OpenFilesUseCurrentTab = value.OpenFilesUseCurrentTab
 	result.CloseTabOnDoubleClick = value.CloseTabOnDoubleClick
-	result.DocIconClickExpand = value.DocIconClickExpand
-	result.ParentDocClickExpand = value.ParentDocClickExpand
-	result.BoxDocEnabled = value.BoxDocEnabled
-	result.UseSVGDefaultIcon = value.UseSVGDefaultIcon
+	result.CloseWindowOnLastTabClosed = value.CloseWindowOnLastTabClosed
+	result.RestoreDocPosition = value.RestoreDocPosition
+	result.DocIconClickMode = value.DocIconClickMode
+	result.ParentDocTitleClickMode = value.ParentDocTitleClickMode
+	boxDocEnabled := value.BoxDocEnabled
+	result.BoxDocEnabled = &boxDocEnabled
+	useSVGDefaultIcon := value.UseSVGDefaultIcon
+	result.UseSVGDefaultIcon = &useSVGDefaultIcon
 	result.RefCreateSaveBox = value.RefCreateSaveBox
 	result.RefCreateSavePath = value.RefCreateSavePath
 	result.DocCreateSaveBox = value.DocCreateSaveBox
@@ -490,6 +552,7 @@ func settingFileTreePayload(value *conf.FileTree) *apicontract.SettingFileTree {
 	result.ShorthandSaveBox = value.ShorthandSaveBox
 	result.ShorthandSavePath = value.ShorthandSavePath
 	result.MaxListCount = value.MaxListCount
+	result.DocTreeBatchSize = value.DocTreeBatchSize
 	result.MaxOpenTabCount = value.MaxOpenTabCount
 	result.AllowCreateDeeper = value.AllowCreateDeeper
 	result.RemoveDocWithoutConfirm = value.RemoveDocWithoutConfirm
@@ -509,6 +572,7 @@ func settingSearchPayload(value *conf.Search) *apicontract.SettingSearch {
 		return nil
 	}
 	result := &apicontract.SettingSearch{}
+	result.GroupFolded = value.GroupFolded
 	result.Mindmap = value.Mindmap
 	result.MindmapItem = value.MindmapItem
 	result.Document = value.Document
@@ -557,6 +621,17 @@ func settingAppearancePayload(value *conf.Appearance) *apicontract.SettingAppear
 		return nil
 	}
 	result := &apicontract.SettingAppearance{}
+	result.ShowFloatingDockBar = value.ShowFloatingDockBar
+	result.LockScreenWallpaper = value.LockScreenWallpaper
+	result.CompactMode = value.CompactMode
+	result.MenuMouseScroll = value.MenuMouseScroll
+	result.OutlineKeepCurrentExpand = value.OutlineKeepCurrentExpand
+	if value.PDFTheme != nil {
+		result.PDFTheme = &apicontract.SettingPDFTheme{Light: value.PDFTheme.Light, Dark: value.PDFTheme.Dark, AnnoColor: value.PDFTheme.AnnoColor}
+	}
+	if value.MobileBars != nil {
+		result.MobileBars = &apicontract.SettingMobileBars{AutoHide: value.MobileBars.AutoHide, SidebarSwipe: value.MobileBars.SidebarSwipe, SidebarButtons: value.MobileBars.SidebarButtons}
+	}
 	result.BodyGradient = settingBodyGradientPayload(value.BodyGradient)
 	if value.GlobalFontFamilies != nil {
 		result.GlobalFontFamilies = make([]*apicontract.SettingEditorFont, len(value.GlobalFontFamilies))
@@ -596,6 +671,7 @@ func settingAppearancePayload(value *conf.Appearance) *apicontract.SettingAppear
 	result.CloseButtonBehavior = value.CloseButtonBehavior
 	result.HideToolbar = value.HideToolbar
 	result.HideStatusBar = value.HideStatusBar
+	result.ShowFloatingStatusBar = value.ShowFloatingStatusBar
 	result.StatusBar = settingStatusBarPayload(value.StatusBar)
 	result.Notifications = settingNotificationsPayload(value.Notifications)
 	result.EntryVisibility = settingEntryVisibilityPayload(value.EntryVisibility)
@@ -696,6 +772,7 @@ func settingEntryVisibilityProfilePayload(value *conf.EntryVisibilityProfile) *a
 	result := &apicontract.SettingEntryVisibilityProfile{}
 	result.ID = value.ID
 	result.Name = value.Name
+	result.Defaults = value.Defaults
 	result.Entries = value.Entries
 	result.Orders = value.Orders
 	return result

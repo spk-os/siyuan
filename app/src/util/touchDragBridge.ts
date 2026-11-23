@@ -1,6 +1,8 @@
 import {stopScrollAnimation} from "../boot/globalEvent/dragover";
 import {Constants} from "../constants";
-import {isInAndroid} from "../plugin/platformUtils";
+import {isInAndroid, isInHarmony} from "../protyle/util/compatibility";
+import {isMobile} from "./functions";
+import {setGutterTouchDragging} from "../protyle/ui/gutterVisibility";
 /// #if !BROWSER
 import {ipcRenderer} from "electron";
 /// #endif
@@ -126,6 +128,7 @@ interface DragState {
     pendingDropSequence?: number;
     pendingDropTimeout?: number;
     restoreDraggable?: boolean;
+    gutterLongPress?: {touchID: number, timer?: number, moved: boolean, gutter: HTMLElement};
 }
 
 interface ForeignDragState {
@@ -185,13 +188,65 @@ export const isLastPointerMouse = (): boolean => {
 
 let touchResizeHandle: HTMLElement | null = null;
 let touchResizeEdges: HTMLElement[] = [];
+let touchResizeInput = false;
+
+/// #if !MOBILE
+const blockPanelResizeSelector = ["rd", "ld", "rt", "lt", "r", "l", "t", "d"]
+    .map(direction => `.block__popover > .resize__${direction}`).join(", ");
+/// #endif
+
+const setTouchResizeInput = (touch: boolean) => {
+    if (touchResizeInput === touch) {
+        return;
+    }
+    touchResizeInput = touch;
+    document.body.classList.toggle("body--touch-resize", touch);
+};
+
+const updateResizePointerInput = (event: PointerEvent) => {
+    if (["mouse", "touch", "pen"].includes(event.pointerType)) {
+        setTouchResizeInput(event.pointerType !== "mouse");
+    }
+};
 
 // 触摸起始：先判断是否命中原生 Drag API（draggable="true"），命中则走原生路径；否则判断手动 mousedown 白名单
 const handleTouchStart = (e: TouchEvent) => {
-    if (e.touches.length !== 1) return;
+    if (e.touches.length !== 1) {
+        if (dragState?.gutterLongPress) {
+            completeBridgeDrag(undefined, true);
+        }
+        if (touchResizeHandle) {
+            cancelManualTouch();
+        }
+        return;
+    }
 
-    const target = e.target as HTMLElement;
+    let target = e.target as HTMLElement;
     const touch = e.touches[0];
+    setTouchResizeInput(!isMouseInput(touch));
+    if (!isMouseInput(touch) &&
+        (target.classList.contains("b3-dialog__scrim") || target.classList.contains("b3-dialog"))) {
+        // 首次触摸启用外侧把手后重新命中，只接管当前弹窗的缩放边缘。
+        const resizeTarget = document.elementFromPoint(touch.clientX, touch.clientY)?.closest<HTMLElement>(
+            ".resize__rd, .resize__ld, .resize__rt, .resize__lt, .resize__r, .resize__l, .resize__t, .resize__d",
+        );
+        if (resizeTarget && resizeTarget.closest(".b3-dialog") === target.closest(".b3-dialog")) {
+            target = resizeTarget;
+        }
+    }
+
+    let blockPanelHandle: HTMLElement | null = null;
+    /// #if !MOBILE
+    if (!isMouseInput(touch) && !target.closest(".block__popover")) {
+        // 首次触摸扩大外侧把手后重新命中，浮窗内部的正文和按钮仍使用原始目标。
+        target = document.elementFromPoint(touch.clientX, touch.clientY)?.closest<HTMLElement>(
+            blockPanelResizeSelector,
+        ) || target;
+    }
+    blockPanelHandle = target.closest<HTMLElement>(
+        blockPanelResizeSelector + ", .block__popover > .block__icons > .resize__move",
+    );
+    /// #endif
 
     // 部分 Android WebView 会在鼠标 Pointer 事件后继续合成 Touch 事件，此时沿用候选状态并切换为 Touch 驱动。
     if (dragState?.inputType === "pointer" && isMouseInput(touch)) {
@@ -210,6 +265,28 @@ const handleTouchStart = (e: TouchEvent) => {
             dragState = createDragState(draggable, target, touch, "touch", isMouseInput(touch));
             // WebKit 会接管 draggable 元素的长按并取消触摸序列，临时关闭原生拖拽以保留 touchend。
             suspendNativeDrag(dragState);
+            if (!dragState.isMouse && isBlockGutter(draggable) && isMobile()) {
+                const currentState = dragState;
+                currentState.requireLongPress = true;
+                currentState.lastPoint = copyDragPoint(touch);
+                const longPress: DragState["gutterLongPress"] = {
+                    touchID: touch.identifier, moved: false, gutter: draggable.closest<HTMLElement>(".protyle-gutters"),
+                };
+                currentState.gutterLongPress = longPress;
+                setGutterTouchDragging(longPress.gutter, true);
+                // 块标静止长按后直接显示选中块和拖拽影像，无需先移动手指。
+                longPress.timer = window.setTimeout(() => {
+                    longPress.timer = undefined;
+                    if (dragState !== currentState || currentState.longPressCancelled || currentState.isDragging) {
+                        return;
+                    }
+                    if (!draggable.isConnected || document.hidden) {
+                        completeBridgeDrag(undefined, true);
+                        return;
+                    }
+                    startBridgeDrag(currentState.lastPoint || touch);
+                }, Constants.TIMEOUT_LONGPRESS);
+            }
             return;
         }
     }
@@ -220,7 +297,7 @@ const handleTouchStart = (e: TouchEvent) => {
         return;
     }
     // 手动 mousedown 路径：dock / outline / resize 把手等自实现拖拽的区域
-    if (!target.closest(".dock") &&
+    if (!blockPanelHandle && !target.closest(".dock") &&
         // 弹窗内不能按整个 .b3-dialog 匹配，否则导致闪卡文本扩选失效 https://github.com/siyuan-note/siyuan/issues/18055
         !(target.closest(".b3-dialog") &&  ["resize__move", "resize__rd", "resize__r", "resize__rt",
             "resize__d", "resize__l", "resize__ld", "resize__lt", "resize__t"].some(cls => target.closest("." + cls))) &&
@@ -251,7 +328,7 @@ const handleTouchStart = (e: TouchEvent) => {
     target.dispatchEvent(mouseEvent);
     // 仅在触摸命中可操作边界后提示，不改变鼠标反馈或内容区的长按行为。
     if (!isMouseInput(touch) && document.onmousemove) {
-        touchResizeHandle = target.closest<HTMLElement>(
+        touchResizeHandle = blockPanelHandle || target.closest<HTMLElement>(
             ".layout__resize, .layout__dockresize, " +
             ".b3-dialog .resize__rd, .b3-dialog .resize__ld, .b3-dialog .resize__rt, " +
             ".b3-dialog .resize__lt, .b3-dialog .resize__r, .b3-dialog .resize__l, " +
@@ -288,9 +365,25 @@ const handleTouchMove = (e: TouchEvent) => {
     // 原生 Drag 路径
     if (dragState) {
         const touch = e.touches[0];
+        const longPress = dragState.gutterLongPress;
+        if (longPress) {
+            if (e.touches.length !== 1 || touch.identifier !== longPress.touchID) {
+                completeBridgeDrag(undefined, true);
+                return;
+            }
+            dragState.lastPoint = copyDragPoint(touch);
+            if (Math.abs(touch.clientX - dragState.startX) >= Constants.SIZE_DRAG_THRESHOLD ||
+                Math.abs(touch.clientY - dragState.startY) >= Constants.SIZE_DRAG_THRESHOLD) {
+                longPress.moved = true;
+                clearGutterLongPressTimer(dragState);
+            }
+        }
         if (!dragState.isDragging) {
             // 长按门槛：文件树、画廊、列表标记等触摸后短时间滑动视为滚动，放行原生滚动
             if (shouldYieldToScroll(dragState, touch.clientX, touch.clientY)) {
+                if (longPress && dragState.longPressCancelled) {
+                    setGutterTouchDragging(longPress.gutter, false);
+                }
                 return;
             }
             e.preventDefault();
@@ -329,10 +422,17 @@ const handleTouchMove = (e: TouchEvent) => {
 // 触摸结束：原生路径派发 drop/dragend，手动路径派发 mouseup 清理
 const handleTouchEnd = (e: TouchEvent) => {
     if (dragState) {
-        if (dragState.isDragging) {
+        const longPress = dragState.gutterLongPress;
+        const point = longPress ? Array.from(e.changedTouches).find(touch => touch.identifier === longPress.touchID) :
+            e.changedTouches[0];
+        if (!point) {
+            return;
+        }
+        if (dragState.isDragging || longPress && dragState.longPressCancelled) {
             e.preventDefault();
         }
-        completeBridgeDrag(e.changedTouches[0], false);
+        // 激活后未移动就松手只结束拖拽，不向原位置提交移动操作。
+        completeBridgeDrag(point, !!longPress && (!longPress.moved || e.touches.length > 0));
         return;
     }
     if (!manualState) return;
@@ -341,6 +441,10 @@ const handleTouchEnd = (e: TouchEvent) => {
 };
 
 const handleContextMenu = (event: MouseEvent) => {
+    if (!event.isTrusted && dragState && !dragState.isDragging) {
+        // 合成长按菜单的 touchend 会阻断后续监听器，菜单打开前释放原触点的拖拽候选。
+        completeBridgeDrag(undefined, true);
+    }
     // WebView 会在手指仍按住时派发原生长按菜单，菜单遮罩会截获后续 drop。
     // 松手后由 event.ts 合成的 contextmenu 不是可信事件，需要保留以打开正常的长按菜单。
     if (shouldSuppressNativeContextMenu(event.isTrusted, hasActiveTouchGesture([dragState, manualState]))) {
@@ -382,6 +486,7 @@ const createDragState = (draggableElement: HTMLElement, target: Element, point: 
             draggableElement.closest(".av__gallery-item") !== null ||
             draggableElement.closest(".av__group-title") !== null ||
             draggableElement.closest(".av__cell--header") !== null ||
+            draggableElement.closest(".protyle-gutters[data-scrollable='true']") !== null ||
             draggableElement.closest(".layout-tab-bar") !== null ||
             draggableElement.closest(".protyle-action") !== null, isMouse, !!isInAndroid()),
         longPressCancelled: false,
@@ -420,7 +525,7 @@ const armMouseClickSuppression = () => {
     suppressMouseClickTimeout = window.setTimeout(clearMouseClickSuppression);
 };
 
-const isDesktopBlockGutter = (draggable: HTMLElement) => {
+const isBlockGutter = (draggable: HTMLElement) => {
     const gutterElement = draggable.closest(".protyle-gutters");
     const buttonElement = draggable.parentElement;
     return !!gutterElement && buttonElement?.tagName === "BUTTON" && !buttonElement.dataset.rowId;
@@ -443,7 +548,7 @@ const handlePointerDown = (event: PointerEvent) => {
     }
 
     const draggable = getDraggableAncestor(event.target);
-    if (!draggable || (!isInAndroid() && !isDesktopBlockGutter(draggable) &&
+    if (!draggable || (!isInAndroid() && !isBlockGutter(draggable) &&
         !isDesktopFileTreeItem(draggable))) {
         return;
     }
@@ -679,6 +784,8 @@ const startBridgeDrag = (point: DragPoint) => {
     const dragStartEvent = createBridgeDragEvent("dragstart", point, dt);
     // 部分拖拽处理会在 dragstart 中再次检查 draggable 属性，派发合成事件时短暂恢复。
     dispatchWithNativeDragEnabled(dragState, () => dragState.draggableElement.dispatchEvent(dragStartEvent));
+    // 块标先根据原文本选区确定拖动范围，再清除原生选区，避免选词手柄接管后续触摸。
+    clearGutterTextSelection();
 
     dragState.ghostElement = window.siyuan.touchDragGhost || null;
     if (dragState.ghostElement) {
@@ -774,6 +881,10 @@ const completeBridgeDrag = (point: DragPoint | undefined, canceled: boolean, rem
 const cleanupDrag = () => {
     const completedState = dragState;
     dragState = null;
+    clearGutterLongPressTimer(completedState);
+    if (completedState?.gutterLongPress) {
+        setGutterTouchDragging(completedState.gutterLongPress.gutter, false);
+    }
     stopScrollAnimation();
     clearDragoverClasses();
     dragRefreshQueue.cancel();
@@ -800,6 +911,22 @@ const cleanupDrag = () => {
     window.siyuan.touchDragActive = false;
     window.siyuan.touchDragGhost = null;
     lastDragOverElement = null;
+};
+
+const clearGutterLongPressTimer = (state: DragState | null) => {
+    if (state?.gutterLongPress?.timer !== undefined) {
+        window.clearTimeout(state.gutterLongPress.timer);
+        state.gutterLongPress.timer = undefined;
+    }
+};
+
+const clearGutterTextSelection = () => {
+    if (dragState?.gutterLongPress && dragState.isDragging) {
+        const selection = document.getSelection();
+        if (selection?.rangeCount) {
+            selection.removeAllRanges();
+        }
+    }
 };
 
 const resetLocalDragIdleTimeout = () => {
@@ -1081,12 +1208,42 @@ const handleVisibilityChange = () => {
     }
     completeBridgeDrag(undefined, true);
     cleanupForeignDrag("end");
+    if (touchResizeHandle) {
+        cancelManualTouch();
+    }
 };
 
 const handleCancel = () => {
     // touchcancel 时两条路径都需无条件清理（cleanupDrag/cancelManualTouch 内部均做空状态处理）
     completeBridgeDrag(undefined, true);
     cancelManualTouch();
+};
+
+// 块标边缘划选仅接管同一目标上尚未开始的触摸拖拽候选。
+export const cancelTouchDragCandidate = (target: HTMLElement): (() => void) | false => {
+    if (manualState || foreignDragState || window.siyuan.touchDragActive) return false;
+    const gutter = target.closest<HTMLElement>(".protyle-gutters");
+    if (!gutter) return false;
+    if (dragState && (dragState.inputType !== "touch" || dragState.isMouse || dragState.isDragging ||
+        !isBlockGutter(dragState.draggableElement) || !dragState.draggableElement.contains(target))) return false;
+    const draggable = dragState?.draggableElement || getDraggableAncestor(target);
+    const originalDraggable = dragState?.restoreDraggable ? "true" : draggable?.getAttribute("draggable");
+    if (dragState) {
+        dragState.restoreDraggable = false;
+        completeBridgeDrag(undefined, true);
+    }
+    draggable?.setAttribute("draggable", "false");
+    setGutterTouchDragging(gutter, true);
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        if (draggable) {
+            if (originalDraggable === null) draggable.removeAttribute("draggable");
+            else if (originalDraggable !== undefined) draggable.setAttribute("draggable", originalDraggable);
+        }
+        setGutterTouchDragging(gutter, false);
+    };
 };
 
 // 取消手动桥接（mousedown）路径：派发 mouseup 以触发各组件注册的清理回调（如 Outline.bindSort 的 mouseup 会清空 document.onmousemove 等），并复位状态
@@ -1117,9 +1274,12 @@ export const initTouchDragBridge = () => {
     // 所有平台都需记录输入源，供 Touch 回调识别鼠标合成事件。
     document.addEventListener("pointerdown", (event: PointerEvent) => {
         lastPointerType = event.pointerType;
+        updateResizePointerInput(event);
     }, {capture: true, passive: true});
+    document.addEventListener("pointerover", updateResizePointerInput, {capture: true, passive: true});
+    document.addEventListener("pointermove", updateResizePointerInput, {capture: true, passive: true});
 
-    let enablePointerBridge = !!isInAndroid();
+    let enablePointerBridge = !!(isInAndroid() || isInHarmony());
     /// #if !BROWSER
     enablePointerBridge = true;
     ipcRenderer.on(Constants.SIYUAN_BLOCK_DRAG, (event, message: BlockDragRelayMessage) => {
@@ -1127,7 +1287,7 @@ export const initTouchDragBridge = () => {
     });
     /// #endif
     if (enablePointerBridge) {
-        // Android 外接鼠标、桌面普通块标和文档树由 Pointer 路径驱动，避免原生 dragstart 取消事件流。
+        // Android 外接鼠标、鸿蒙和桌面普通块标及文档树由 Pointer 路径驱动，保留实时修饰键和事件流。
         document.addEventListener("pointerdown", handlePointerDown, {capture: true, passive: true});
         document.addEventListener("pointermove", handlePointerMove, {capture: true, passive: false});
         document.addEventListener("pointerup", handlePointerUp, {capture: true, passive: false});
@@ -1143,7 +1303,17 @@ export const initTouchDragBridge = () => {
     document.addEventListener("keydown", handleDragKey, {capture: true});
     document.addEventListener("keyup", handleDragKey, {capture: true});
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("selectstart", event => {
+        // 候选块标手势只阻止原生选词，完整块标栏仍可在长按前滑动滚动。
+        if (dragState?.gutterLongPress && !dragState.longPressCancelled) {
+            event.preventDefault();
+        }
+    }, {capture: true});
+    document.addEventListener("selectionchange", clearGutterTextSelection);
     window.addEventListener("blur", () => {
+        if (dragState?.gutterLongPress) {
+            completeBridgeDrag(undefined, true);
+        }
         if (enablePointerBridge && dragState?.inputType === "pointer" &&
             shouldCancelPointerDragAfterWindowExit(!!isInAndroid(), dragState.isDragging,
                 !!dragState.relayId)) {
@@ -1157,7 +1327,7 @@ export const initTouchDragBridge = () => {
     // 触摸事件桥接：原生 Drag API（draggable="true"）与手动 mousedown 拖拽（dock/outline/resize 把手）统一入口
     document.addEventListener("touchstart", handleTouchStart, {passive: false});
     document.addEventListener("touchmove", handleTouchMove, {passive: false});
-    document.addEventListener("touchend", handleTouchEnd);
+    document.addEventListener("touchend", handleTouchEnd, {passive: false});
     document.addEventListener("touchcancel", handleCancel);
     document.addEventListener("contextmenu", handleContextMenu, {capture: true});
 };

@@ -1,10 +1,13 @@
-import {Dialog} from "../dialog";
+import {AdaptiveDialog} from "../dialog/adaptiveDialog";
 import {showMessage} from "../dialog/message";
 import {fetchSyncPost} from "../util/fetch";
 import {ContractFormData} from "../util/contractFormData";
 import {saveExportFile} from "../protyle/util/compatibility";
 import {escapeHtml} from "../util/escape";
 import {isMobile} from "../util/functions";
+/// #if !MOBILE
+import {reloadUI} from "../layout/util";
+/// #endif
 
 export const openNotebookArchiveDialog = async (refresh: () => void) => {
     const response = await fetchSyncPost("/api/notebook/getNotebookArchiveCandidates", {});
@@ -12,7 +15,8 @@ export const openNotebookArchiveDialog = async (refresh: () => void) => {
         return;
     }
     const lang = window.siyuan.languages;
-    const dialog = new Dialog({
+    const dialog = new AdaptiveDialog({
+        mobileSheet: {beforeClose: () => !busy},
         title: lang.archiveEncryptedNotebooks,
         width: isMobile() ? "92vw" : "560px",
         content: `<div class="b3-dialog__content">
@@ -88,6 +92,7 @@ export const openNotebookArchiveDialog = async (refresh: () => void) => {
             if (result.code !== 0) {
                 return;
             }
+            busy = false;
             dialog.destroy();
             showMessage(lang.archivedEncryptedNotebooks, 10000);
             refresh();
@@ -100,7 +105,8 @@ export const openNotebookArchiveDialog = async (refresh: () => void) => {
 
 export const openNotebookArchiveImportDialog = (refresh: () => void) => {
     const lang = window.siyuan.languages;
-    const dialog = new Dialog({
+    const dialog = new AdaptiveDialog({
+        mobileSheet: {beforeClose: (): boolean => !button.disabled},
         title: lang.restoreEncryptedNotebooks,
         width: isMobile() ? "92vw" : "560px",
         content: `<div class="b3-dialog__content">
@@ -140,11 +146,16 @@ export const openNotebookArchiveImportDialog = (refresh: () => void) => {
                 showMessage(response.msg, 7000, "error");
                 return;
             }
+            button.disabled = false;
             dialog.destroy();
             showMessage(lang.imported);
             refresh();
             // 导入保留锁定状态，刷新导航即可显示新恢复的笔记本。
+            /// #if MOBILE
             window.location.reload();
+            /// #else
+            void reloadUI();
+            /// #endif
         } finally {
             button.disabled = false;
         }

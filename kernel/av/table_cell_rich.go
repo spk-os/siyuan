@@ -1,11 +1,19 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package av
 
 import (
 	"fmt"
+	stdhtml "html"
+	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/88250/lute/ast"
 	"github.com/88250/lute/parse"
@@ -13,6 +21,8 @@ import (
 
 var (
 	tableCellRichCustomTypePattern     = regexp.MustCompile(`^custom_[A-Za-z0-9_-]{1,128}$`)
+	tableCellRichWindowsPathPattern    = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+	tableCellRichUNCPathPattern        = regexp.MustCompile(`^\\\\[^\\/:?#@]+[\\/][^\\/]+`)
 	tableCellRichCustomPropertyPattern = regexp.MustCompile(`^--custom-[a-z0-9-]{1,128}$`)
 	tableCellRichCustomHexPattern      = regexp.MustCompile(`^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$`)
 	tableCellRichCustomRGBPattern      = regexp.MustCompile(`(?i)^rgba?\(\s*(\d{1,3})(?:,\s*|\s+)(\d{1,3})(?:,\s*|\s+)(\d{1,3})(?:\s*[,/]\s*(?:0(?:\.\d+)?|1(?:\.0+)?))?\s*\)$`)
@@ -26,9 +36,19 @@ func ParseTableCellRich(rich *ast.TableCellRich) (*parse.Tree, error) {
 	if err := rich.Validate(); nil != err {
 		return nil, err
 	}
-	_, tree, err := parseValueTextRichWithImages(&ValueTextRich{
+	luteEngine := newValueTextRichLute()
+	_, tree, err := parseValueTextRichWithLute(&ValueTextRich{
 		Spec: rich.Spec, Format: ValueTextRichFormat(rich.Format), Content: rich.Content,
-	}, true)
+	}, true, luteEngine)
+	if err == nil {
+		// 与 BlockDOM 解析使用相同的合并规则，保持转义字符附近的行内节点边界一致。
+		ast.Walk(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+			if entering && node.Type == ast.NodeTextMark {
+				luteEngine.MergeSameTextMark(node)
+			}
+			return ast.WalkContinue
+		})
+	}
 	return tree, err
 }
 
@@ -45,12 +65,7 @@ func isTableCellRichCustomTextMark(node *ast.Node) bool {
 	if nil == node || ast.NodeTextMark != node.Type {
 		return false
 	}
-	for _, typ := range strings.Fields(node.TextMarkType) {
-		if tableCellRichCustomTypePattern.MatchString(typ) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(strings.Fields(node.TextMarkType), tableCellRichCustomTypePattern.MatchString)
 }
 
 func isAllowedTableCellRichCustomNode(node *ast.Node) bool {
@@ -61,10 +76,10 @@ func isAllowedTableCellRichCustomNode(node *ast.Node) bool {
 		return isAllowedTableCellRichCustomSpanIAL(node)
 	}
 	if ast.NodeTextMark != node.Type || !isTableCellRichCustomTextMark(node) ||
-		"" != node.TextMarkFlashcardOcclusionID || !isAllowedValueTextMarkReferenceData(node) {
+		"" != node.TextMarkFlashcardOcclusionID || !isAllowedValueTextMarkReferenceData(node, true) {
 		return false
 	}
-	for _, typ := range strings.Fields(node.TextMarkType) {
+	for typ := range strings.FieldsSeq(node.TextMarkType) {
 		if tableCellRichCustomTypePattern.MatchString(typ) {
 			continue
 		}
@@ -78,6 +93,28 @@ func isAllowedTableCellRichCustomNode(node *ast.Node) bool {
 		return nil == node.Next || ast.NodeKramdownSpanIAL != node.Next.Type
 	}
 	return nil != node.Next && isAllowedTableCellRichCustomSpanIAL(node.Next)
+}
+
+// 普通表格的本地超链接保留原始路径，图片来源不使用此规则。
+func isAllowedTableCellRichLocalLinkTarget(target string) bool {
+	if target != strings.TrimSpace(target) || !utf8.ValidString(target) {
+		return false
+	}
+	target, decoded, ok := decodeValueTextRichLinkTarget(target)
+	if !ok || !utf8.ValidString(decoded) || target != strings.TrimSpace(target) ||
+		containsValueTextRichUnsafeControl(target) || containsValueTextRichUnsafeControl(decoded) {
+		return false
+	}
+	if tableCellRichWindowsPathPattern.MatchString(target) || tableCellRichUNCPathPattern.MatchString(target) {
+		return true
+	}
+	normalized := strings.ReplaceAll(target, `\`, "/")
+	if !strings.HasPrefix(strings.ToLower(normalized), "file://") {
+		return false
+	}
+	parsed, err := url.Parse(normalized)
+	return nil == err && strings.EqualFold(parsed.Scheme, "file") && nil == parsed.User &&
+		!strings.Contains(parsed.Host, ":") && strings.HasPrefix(parsed.Path, "/")
 }
 
 func isAllowedTableCellRichCustomSpanIAL(node *ast.Node) bool {
@@ -159,6 +196,17 @@ func isAllowedTableCellRichImageNode(node *ast.Node) bool {
 		}
 		switch attribute[0] {
 		case "title":
+		case "custom-sy-live-photo":
+			if _, err := strconv.ParseUint(attribute[1], 10, 32); err != nil {
+				return false
+			}
+		case "custom-sy-live-photo-video":
+			target, err := url.Parse(image.IALAttr(attribute[0]))
+			if err != nil || target.IsAbs() || target.Host != "" ||
+				!strings.HasPrefix(strings.TrimPrefix(target.Path, "/"), "assets/") ||
+				strings.Contains(target.Path, "\\") || slices.Contains(strings.Split(target.Path, "/"), "..") {
+				return false
+			}
 		case "style", "parent-style":
 			style := strings.ToLower(attribute[1])
 			if strings.ContainsAny(style, "\\<>@") || strings.Contains(style, "url") || strings.Contains(style, "expression") {
@@ -170,7 +218,7 @@ func isAllowedTableCellRichImageNode(node *ast.Node) bool {
 	}
 	if ast.NodeKramdownSpanIAL == node.Type {
 		for _, attribute := range parse.Tokens2IAL(node.Tokens) {
-			if len(attribute) != 2 || image.IALAttr(attribute[0]) != attribute[1] {
+			if len(attribute) != 2 || image.IALAttr(attribute[0]) != stdhtml.UnescapeString(attribute[1]) {
 				return false
 			}
 		}

@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package search
 
@@ -23,6 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+
+	"github.com/siyuan-note/filelock"
 )
 
 type Match struct {
@@ -107,6 +97,9 @@ func FindAllMatches(root string, targets []string) []Match {
 
 // scanFileForTargets 在文件中流式搜索所有目标（基于首字节索引），返回去重后的命中目标字符串列表
 func scanFileForTargets(path string, patternIndex map[byte][][]byte, maxLen int) []string {
+	// 扫描句柄关闭后才允许替换文档，避免 Windows 拒绝并发保存。
+	filelock.Lock(path)
+	defer filelock.Unlock(path)
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

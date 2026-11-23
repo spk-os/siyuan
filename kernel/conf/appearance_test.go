@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package conf
 
@@ -62,6 +50,44 @@ func TestGlobalFontFamiliesPreservesPriority(t *testing.T) {
 	}
 }
 
+func TestAppearanceEntryVisibilityDefaults(t *testing.T) {
+	for _, mobile := range []bool{false, true} {
+		appearance := NormalizeAppearance(NewAppearanceForContainer(mobile), mobile)
+		if appearance.EntryVisibility.Active != EntryVisibilityProfileFull || len(appearance.EntryVisibility.Profiles) != 0 {
+			t.Fatalf("new workspace should use the full profile (mobile=%v): %+v", mobile, appearance.EntryVisibility)
+		}
+	}
+}
+
+func TestAppearanceEntryVisibilityPreservesSavedProfiles(t *testing.T) {
+	for _, active := range []string{EntryVisibilityProfileSimple, EntryVisibilityProfileFull, "custom"} {
+		for _, mobile := range []bool{false, true} {
+			saved := &EntryVisibility{Version: EntryVisibilityVersion, Active: active, Profiles: []*EntryVisibilityProfile{{
+				ID: "custom", Name: "Custom", Defaults: EntryVisibilityProfileSimple,
+				Entries: map[string]bool{"editor.toolbar.strong": false, "plugin:unavailable:item": true},
+				Orders:  map[string][]string{"dock.order.RightBottom": {"outline", "plugin:unavailable:dock", "file"}},
+			}}}
+			before, err := json.Marshal(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			appearance := NewAppearanceForContainer(mobile)
+			data := append(append([]byte(`{"entryVisibility":`), before...), '}')
+			if err = json.Unmarshal(data, appearance); err != nil {
+				t.Fatal(err)
+			}
+			NormalizeAppearance(appearance, mobile)
+			after, err := json.Marshal(appearance.EntryVisibility)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatalf("saved profile changed (active=%s, mobile=%v):\n%s\n%s", active, mobile, before, after)
+			}
+		}
+	}
+}
+
 func TestNormalizeEntryVisibilityDefaults(t *testing.T) {
 	entryVisibility := NormalizeEntryVisibility(nil, EntryVisibilityProfileSimple)
 	if entryVisibility.Version != EntryVisibilityVersion || entryVisibility.Active != EntryVisibilityProfileSimple {
@@ -69,6 +95,29 @@ func TestNormalizeEntryVisibilityDefaults(t *testing.T) {
 	}
 	if nil == entryVisibility.Profiles || 0 != len(entryVisibility.Profiles) {
 		t.Fatalf("unexpected profiles: %+v", entryVisibility.Profiles)
+	}
+}
+
+func TestNormalizeEntryVisibilityDefaultsCompatibility(t *testing.T) {
+	for _, version := range []int{6, 7} {
+		for _, defaults := range []string{"", "simple", "full", "invalid"} {
+			profile := &EntryVisibilityProfile{ID: "custom", Name: "Custom", Defaults: defaults,
+				Entries: map[string]bool{"editor.toolbar.strong": false, "plugin:unavailable:item": true},
+				Orders:  map[string][]string{"dock": {"plugin:unavailable:dock"}}}
+			config := NormalizeEntryVisibility(&EntryVisibility{Version: version, Active: "custom", Profiles: []*EntryVisibilityProfile{profile}}, EntryVisibilityProfileFull)
+			want := defaults
+			if version < 7 || defaults == "invalid" {
+				want = ""
+			}
+			if profile.Defaults != want || len(profile.Entries) != 2 || profile.Entries["editor.toolbar.strong"] ||
+				!profile.Entries["plugin:unavailable:item"] || profile.Orders["dock"][0] != "plugin:unavailable:dock" {
+				t.Fatalf("profile compatibility lost for version %d defaults %q: %+v", version, defaults, profile)
+			}
+			NormalizeEntryVisibility(config, EntryVisibilityProfileFull)
+			if profile.Defaults != want || len(profile.Entries) != 2 {
+				t.Fatal("normalization changed a normalized profile")
+			}
+		}
 	}
 }
 

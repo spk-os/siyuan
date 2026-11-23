@@ -47,9 +47,13 @@ export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
     const centerRect = (isWindowMode ? window.siyuan.layout.layout : window.siyuan.layout.centerLayout).element.getBoundingClientRect();
     const toolbarDragElement = document.getElementById("drag");
     const toolbarDragRect = toolbarDragElement?.getBoundingClientRect() || {left: 0, right: 0};
+    const toolbarDragRightInset = toolbarDragElement && window.siyuan.config.appearance.hideToolbar &&
+        document.documentElement.dataset.frontend === "desktop" &&
+        document.body.matches(".body--windows, .body--mac, .body--linux") ? 24 : 0;
+    const toolbarDragRightMinWidth = toolbarDragRightInset || 8;
     if (toolbarDragElement) {
         toolbarDragElement.style.setProperty("--b3-toolbar-drag-left", "8px");
-        toolbarDragElement.style.setProperty("--b3-toolbar-drag-right", "8px");
+        toolbarDragElement.style.setProperty("--b3-toolbar-drag-right", toolbarDragRightMinWidth + "px");
     }
     wndsTemp.forEach(item => {
         const headerElement = item.headersElement.parentElement;
@@ -59,6 +63,7 @@ export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
         }
         const headerRect = headerElement.getBoundingClientRect();
         headerElement.style.paddingLeft = "";
+        headerElement.style.paddingRight = "";
         (headerElement.lastElementChild as HTMLElement).style.marginRight = "";
         headerElement.style.visibility = "";
         if (headerRect.top <= 0) {
@@ -76,18 +81,26 @@ export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
             }
 
             if (isWindowMode) {
-                if (headerRect.right === centerRect.right) {
-                    (headerElement.lastElementChild as HTMLElement).style.marginRight = document.querySelector(".toolbar__window").clientWidth - 4 + "px";
+                const toolbarRect = document.querySelector(".toolbar__window")?.getBoundingClientRect();
+                if (toolbarRect && headerRect.right > toolbarRect.left) {
+                    headerElement.style.paddingRight = headerRect.right - toolbarRect.left + "px";
+                    if (headerElement.lastElementChild.getBoundingClientRect().right > toolbarRect.left + 0.5) {
+                        headerElement.style.paddingRight = "";
+                        headerElement.style.visibility = "hidden";
+                    }
                 }
             } else {
-                if (headerRect.right < toolbarDragRect.right && headerRect.right === centerRect.right) {
-                    toolbarDragElement.style.setProperty("--b3-toolbar-drag-right", toolbarDragRect.right - headerRect.right + "px");
-                } else if (headerRect.right > toolbarDragRect.right) {
+                const rightGap = toolbarDragRect.right - headerRect.right;
+                if (rightGap > 0 && headerRect.right === centerRect.right) {
+                    toolbarDragElement.style.setProperty("--b3-toolbar-drag-right", Math.max(toolbarDragRightInset, rightGap) + "px");
+                }
+                const rightOverlap = toolbarDragRightInset - rightGap;
+                if (rightOverlap > 0) {
                     // 不能取 clientWidth，因为设置了 min-width(64) 导致 clientWidth 大于实际宽度
-                    if (headerRect.right - toolbarDragRect.right + 64 > headerRect.width) {
+                    if (rightOverlap + 64 > headerRect.width) {
                         headerElement.style.visibility = "hidden";
                     } else {
-                        (headerElement.lastElementChild as HTMLElement).style.marginRight = (headerRect.right - toolbarDragRect.right) + "px";
+                        (headerElement.lastElementChild as HTMLElement).style.marginRight = rightOverlap + "px";
                     }
                 }
             }
@@ -112,10 +125,13 @@ export const setTabPosition = (onlyPadding = false, onlyClear = false) => {
                 }
             }
             dragElement.parentElement.parentElement.style.minWidth = "56px";
-            dragElement.style.height = dragElement.parentElement.clientHeight + "px";
+            // 用 flex 拉伸撑满行高，跟随界面密度和覆盖层高度变化，避免写死像素后无法回缩。
+            dragElement.style.alignSelf = "stretch";
+            dragElement.style.height = "";
             (dragElement.style as CSSStyleDeclarationElectron).WebkitAppRegion = "drag";
         } else {
             dragElement.parentElement.parentElement.style.minWidth = "";
+            dragElement.style.alignSelf = "";
             dragElement.style.height = "";
             (dragElement.style as CSSStyleDeclarationElectron).WebkitAppRegion = "";
         }
@@ -463,47 +479,48 @@ const pushRootID = (rootIDs: string[], item: Tab) => {
     }
 };
 
-export const closeTabByType = (tab: Tab, type: "closeOthers" | "closeAll" | "other", tabs?: Tab[]) => {
-    const rootIDs: string[] = [];
+export const closeTabByType = async (tab: Tab, type: "closeOthers" | "closeAll" | "other", tabs?: Tab[]) => {
+    const wnd = tab.parent;
+    const closing: Promise<string[]>[] = [];
+    const focusRemainingTab = () => {
+        // A user may have switched tabs while title persistence was pending.
+        if (wnd.children.some(item => item.headElement?.classList.contains("item--focus"))) return;
+        const remaining = wnd.children.includes(tab) && tab.headElement ? tab :
+            [...wnd.children].reverse().find(item => item.headElement);
+        if (remaining) wnd.switchTab(remaining.headElement, true);
+    };
+    const close = async (item: Tab, animate: boolean) => {
+        const rootIDs: string[] = [];
+        pushRootID(rootIDs, item);
+        const closed = await item.parent.removeTab(item.id, true, animate);
+        if (closed) focusRemainingTab();
+        return closed ? rootIDs : [];
+    };
     if (type === "closeOthers") {
-        for (let index = 0; index < tab.parent.children.length; index++) {
-            const item = tab.parent.children[index];
+        // Closing may wait for title persistence or be blocked by an upload.
+        for (const item of [...tab.parent.children]) {
             if (item.id !== tab.id && item.headElement && !item.headElement.classList.contains("item--pin")) {
-                pushRootID(rootIDs, item);
-                item.parent.removeTab(item.id, true, false);
-                index--;
+                closing.push(close(item, false));
             }
         }
     } else if (type === "closeAll") {
-        for (let index = 0; index < tab.parent.children.length; index++) {
-            const item = tab.parent.children[index];
+        for (const item of [...tab.parent.children]) {
             if (item.headElement && !item.headElement.classList.contains("item--pin")) {
-                pushRootID(rootIDs, item);
-                item.parent.removeTab(item.id, true);
-                index--;
+                closing.push(close(item, true));
             }
         }
-    } else if (tabs.length > 0) {
-        for (let index = 0; index < tabs.length; index++) {
-            const item = tabs[index];
+    } else if (tabs?.length > 0) {
+        for (const item of [...tabs]) {
             if (item.headElement && !item.headElement.classList.contains("item--pin")) {
-                item.parent.removeTab(item.id);
+                closing.push(Promise.resolve(item.parent.removeTab(item.id)).then((): string[] => []));
             }
         }
     }
+    focusRemainingTab();
+    const rootIDs = (await Promise.all(closing)).flat();
     // 批量更新文档关闭时间
     if (rootIDs.length > 0) {
         fetchPost("/api/storage/batchUpdateRecentDocCloseTime", {rootIDs});
     }
-    if (tab.headElement?.parentElement && !tab.headElement.parentElement.querySelector(".item--focus")) {
-        tab.parent.switchTab(tab.headElement, true);
-    } else {
-        for (let index = tab.parent.children.length - 1; index >= 0; index--) {
-            const item = tab.parent.children[index];
-            if (item.headElement) {
-                tab.parent.switchTab(item.headElement, true);
-                break;
-            }
-        }
-    }
+    focusRemainingTab();
 };

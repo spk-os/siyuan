@@ -1,7 +1,9 @@
 import {isTableLikeView} from "./viewType";
+import {prepareAVColumnWindow} from "./columnWindow";
 import {addDragFill, cellScrollIntoView} from "./cell";
 import {clearSelect} from "../../util/clear";
-import {focusBlock, focusByRange} from "../../util/selection";
+import {focusBlock} from "../../util/selection";
+import {focusByRange} from "../../util/selectionOffsets";
 import {getFirstBlock, getLastBlock, getNextBlock, getPreviousBlock} from "../../wysiwyg/getBlock";
 import {scrollCenter} from "../../../util/highlightById";
 import {focusEditableAtGoalX, TVerticalDirection} from "../../wysiwyg/verticalCaret";
@@ -66,6 +68,7 @@ export const focusAVVerticalRegion = (blockElement: HTMLElement, direction: TVer
     }
 
     if (isTableLikeView(blockElement.dataset.avType)) {
+        prepareAVColumnWindow(blockElement);
         const rows = getOwnVisibleElements(blockElement, ".av__row[data-id]:not(.av__row--header)");
         const rowElement = getAVData(blockElement) ? ensureAVTableBoundaryRow(blockElement, direction) :
             rows[direction === "down" ? 0 : rows.length - 1];
@@ -123,6 +126,7 @@ export const focusAVByArrow = (protyle: IProtyle, blockElement: HTMLElement, key
     if (!isTableLikeView(blockElement.dataset.avType)) {
         return false;
     }
+    prepareAVColumnWindow(blockElement);
 
     const cellElement = Array.from(blockElement.querySelectorAll<HTMLElement>(".av__row[data-id] .av__cell")).find(
         item => item.getClientRects().length > 0

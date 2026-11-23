@@ -4,6 +4,7 @@ import {describe, it} from "node:test";
 import {runInNewContext} from "node:vm";
 import {ModuleKind, ScriptTarget, transpileModule} from "typescript";
 import {isTableLikeView} from "./viewType";
+import {getAVCellEditorOwner} from "./cellEditor";
 
 const source = readFileSync("src/protyle/render/av/cell.ts", "utf8");
 const compiled = transpileModule(source.slice(source.indexOf("const updateCellValueByInput ="),
@@ -52,6 +53,81 @@ const createEditor = (changed: boolean, viewType = "table") => {
 };
 
 describe("database cell editor navigation", () => {
+    it("discard closes only the owned virtual host's cell panel and rich-text dialog", () => {
+        const api = {} as typeof import("./cellEditor");
+        const events: string[] = [];
+        class Anchor {}
+        const anchor = new Anchor();
+        let menuTarget = anchor;
+        let menusClosed = 0;
+        const make = (identity: string, richtext = false) => ({
+            dataset: {avBlockId: identity, avRichtextEditor: richtext ? "true" : undefined},
+            remove: () => events.push(`remove:${identity}`),
+            dispatchEvent: (event: Event) => events.push(`${event.type}:${identity}`),
+        });
+        const elements = [make("virtual-a"), make("virtual-a", true), make("virtual-b"), make("virtual-b", true)];
+        runInNewContext(transpileModule(readFileSync("src/protyle/render/av/cellEditor.ts", "utf8"), {
+            compilerOptions: {module: ModuleKind.CommonJS, target: ScriptTarget.ES2020},
+        }).outputText, {
+            exports: api, CustomEvent, HTMLElement: Anchor,
+            window: {siyuan: {menus: {menu: {get data() { return menuTarget; }, remove: () => { menusClosed++; }}}}},
+            document: {querySelectorAll: (selector: string) => {
+                if (!selector.includes("[data-av-richtext-editor]")) {
+                    assert.doesNotMatch(selector, /\.av__panel/);
+                    return [];
+                }
+                assert.match(selector, /\.av__panel/);
+                return elements;
+            }},
+        });
+        const owner = {querySelectorAll: () => [{dataset: {avHost: "virtual-a"}}],
+            contains: (element: Anchor) => element === anchor} as unknown as HTMLElement;
+        api.closeAVCellEditor(owner, true);
+        assert.deepEqual(events, []);
+        assert.equal(menusClosed, 0);
+        api.closeAVCellEditor(owner, false);
+        assert.deepEqual(events, ["remove:virtual-a", "siyuan-av-cell-editor-close:virtual-a"]);
+        assert.equal(menusClosed, 1);
+        menuTarget = new Anchor();
+        api.closeAVCellEditor(owner, false);
+        assert.equal(menusClosed, 1);
+    });
+    it("owns ordinary Attributes dialogs, row panels and inline databases by their actual container", () => {
+        for (const container of [{kind: "attributes-dialog"}, {kind: "row-panel"}, {kind: "custom-attributes"}, null]) {
+            const block = {closest: (selector: string) => {
+                assert.equal(selector, ".protyle-db-row, .b3-dialog__container, .custom-attr");
+                return container;
+            }} as unknown as HTMLElement;
+            assert.equal(getAVCellEditorOwner(block), container || block);
+        }
+    });
+    it("dispatches cancel-only lifecycle events for owned location dialogs on save and discard closes", () => {
+        const api = {} as typeof import("./cellEditor");
+        let closed = 0;
+        const dialog = {
+            dataset: {avLocationEditor: "true", avBlockId: "database-block"},
+            dispatchEvent: (event: Event) => {
+                assert.equal(event.type, "siyuan-av-cell-editor-close");
+                closed++;
+            },
+            remove: () => assert.fail("the Dialog must clean up its own session and listeners"),
+        };
+        runInNewContext(transpileModule(readFileSync("src/protyle/render/av/cellEditor.ts", "utf8"), {
+            compilerOptions: {module: ModuleKind.CommonJS, target: ScriptTarget.ES2020},
+        }).outputText, {
+            exports: api,
+            CustomEvent,
+            document: {querySelectorAll: (selector: string) => {
+                assert.match(selector, /\[data-av-location-editor\]/);
+                return [dialog];
+            }},
+        });
+        const owner = {querySelectorAll: () => [{dataset: {nodeId: "database-block"}}]} as unknown as HTMLElement;
+        api.closeAVCellEditor(owner, true);
+        api.closeAVCellEditor(owner, false);
+        api.closeAVCellEditor({querySelectorAll: (): HTMLElement[] => []} as unknown as HTMLElement);
+        assert.equal(closed, 2);
+    });
     it("submits list property edits using the row identity and restores focus", () => {
         const editor = createEditor(true, "list");
         editor.close(true);

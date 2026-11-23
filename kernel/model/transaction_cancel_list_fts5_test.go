@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //go:build fts5
 
 package model
@@ -56,6 +60,7 @@ func TestListConversionFrontendTransactions(t *testing.T) {
 				value.IsDetached, value.Block.ID = false, id
 				value.Block.RefSubtype = "d"
 				value.Block.Content = treenode.GetNodeInTree(tree, id).Text()
+				refreshAttributeViewPrimarySource(value, treenode.GetNodeInTree(tree, id), view.ID)
 			}
 			if _, err = filesys.WriteTree(tree); err != nil {
 				t.Fatal(err)
@@ -124,7 +129,7 @@ func TestListConversionFrontendTransactions(t *testing.T) {
 				}
 				assertAttributeViewFieldsTest(t, view, readAttributeViewItemsTest(t, view.ID))
 			}
-			for cycle := 0; cycle < 2; cycle++ {
+			for range 2 {
 				check(testCase.After)
 				replayAttributeViewFieldsTest(t, entry.UndoOperationsForReplay())
 				check(testCase.Before)
@@ -217,7 +222,7 @@ func TestCancelListPreservesDatabaseFields(t *testing.T) {
 					}
 				}
 			}
-			for cycle := 0; cycle < 3; cycle++ {
+			for range 3 {
 				check(false)
 				replayAttributeViewFieldsTest(t, entry.UndoOperationsForReplay())
 				check(true)

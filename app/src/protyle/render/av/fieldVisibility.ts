@@ -4,6 +4,7 @@ import {Constants} from "../../../constants";
 import {unicode2Emoji} from "../../../emoji";
 import {escapeHtml} from "../../../util/escape";
 import {setPosition} from "../../../util/setPosition";
+import {isAVCardView} from "./viewType";
 
 const getViewIcon = (type: TAVView) => {
     switch (type) {
@@ -41,7 +42,7 @@ const getSupportedFieldViews = (views: IAVFieldView[] | undefined, fieldType?: T
     if (!views) {
         return;
     }
-    return fieldType === "block" ? views.filter(view => view.type === "gallery") : views;
+    return fieldType === "block" ? views.filter(view => isAVCardView(view.type)) : views;
 };
 
 const setFieldVisibility = (options: {
@@ -88,7 +89,7 @@ const getFieldVisibilityItemsHTML = (views: IAVFieldView[], backColId: string) =
     ${view.hidden ? "" : '<svg class="b3-menu__checked"><use xlink:href="#iconSelect"></use></svg>'}
 </button>`;
     };
-    const titleIconHTML = `<span class="block__icon" style="padding: 8px;margin-left: -4px;" data-type="editCol" data-id="${backColId}">
+    const titleIconHTML = `<span class="block__icon block__icon--menu-back" data-type="editCol" data-id="${backColId}">
         <svg><use xlink:href="#iconLeft"></use></svg>
     </span>`;
     let html = `<button class="b3-menu__item av__field-visibility-title" data-type="nobg">

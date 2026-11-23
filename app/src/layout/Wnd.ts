@@ -1,3 +1,5 @@
+import {toggleMenu} from "../menus/menuToggle";
+import {copyDocumentTitlePreview} from "../protyle/header/documentTitlePreview";
 import {Layout} from "./index";
 import {genUUID} from "../util/genID";
 import {
@@ -22,9 +24,11 @@ import {
     isInEmbedBlock
 } from "../protyle/util/hasClosest";
 import {Constants} from "../constants";
+import {isCustomTabUninstalled} from "../plugin/customTabOwner";
 /// #if !BROWSER
 import {ipcRenderer, webFrame} from "electron";
 import {setModelsHash} from "../window/setHeader";
+import {closeWindowAfterLastTab, flushClosingWindowTab} from "../window/closeWin";
 /// #endif
 import {showMessage} from "../dialog/message";
 import {openFileById, updatePanelByEditor} from "../editor/util";
@@ -41,7 +45,8 @@ import {MenuItem} from "../menus/Menu";
 import {escapeHtml} from "../util/escape";
 import {getFrontend} from "../util/functions";
 import {hideAllElements} from "../protyle/ui/hideElements";
-import {focusByOffset, getSelectionOffset} from "../protyle/util/selection";
+import {focusByOffset} from "../protyle/util/selection";
+import {getSelectionOffset} from "../protyle/util/selectionOffsets";
 import {Custom} from "./dock/Custom";
 import type {App} from "../index";
 import {getFileTreeIconHTML} from "../emoji/fileTreeIcon";
@@ -64,6 +69,7 @@ import {
 } from "./tabDrag";
 import {parseDocumentTreeDragData} from "../util/fileTreeMove";
 import {pathPosix} from "../util/pathName";
+import {flushDocumentTitleBeforeClose} from "../protyle/header/documentTitleClose";
 
 interface IDocumentTabMoveTarget {
     element: HTMLElement;
@@ -165,6 +171,7 @@ const insertTabHeaderElement = (tabBarElement: HTMLElement, tabHeaderElement: HT
 
 export class Wnd {
     private app: App;
+    private removingOverCounter = false;
     public id: string;
     public parent?: Layout;
     public element: HTMLElement;
@@ -669,6 +676,17 @@ export class Wnd {
                      focusEditor = !isPhablet()) {
         let currentTab: Tab;
         let isInitActive = false;
+        // 显示相邻页签会改变源页签的高度，并触发浏览器原生滚动锚定。
+        // 在改变任何页签可见性前保存离开页签的阅读位置。
+        if (isPhablet()) {
+            this.children.forEach(item => {
+                if (target !== item.headElement && item.model instanceof Editor &&
+                    !item.panelElement.classList.contains("fn__none")) {
+                    saveTabPosition(item.model.editor.protyle);
+                    saveBackScroll(item.model.editor.protyle);
+                }
+            });
+        }
         this.children.forEach((item) => {
             if (target === item.headElement) {
                 if (item.headElement && item.headElement.classList.contains("fn__none")) {
@@ -696,10 +714,6 @@ export class Wnd {
             } else {
                 item.headElement?.classList.remove("item--focus");
                 if (!item.panelElement.classList.contains("fn__none")) {
-                    if (isPhablet() && item.model instanceof Editor) {
-                        saveTabPosition(item.model.editor.protyle);
-                        saveBackScroll(item.model.editor.protyle);
-                    }
                     // 必须现判断，否则会触发 observer.observe(this.element, {attributeFilter: ["class"]}); 导致 https://ld246.com/article/1641198819303
                     item.panelElement.classList.add("fn__none");
                 }
@@ -712,8 +726,11 @@ export class Wnd {
         if (currentTab && currentTab.headElement) {
             const initData = currentTab.headElement.getAttribute("data-initdata");
             if (initData) {
-                currentTab.addModel(newModelByInitData(this.app, currentTab, JSON.parse(initData)));
-                currentTab.headElement.removeAttribute("data-initdata");
+                const model = newModelByInitData(this.app, currentTab, JSON.parse(initData));
+                if (model) {
+                    currentTab.addModel(model);
+                    currentTab.headElement.removeAttribute("data-initdata");
+                }
                 if (isSaveLayout) {
                     saveLayout();
                 }
@@ -779,7 +796,7 @@ export class Wnd {
         }
     }
 
-    public addTab(tab: Tab, keepCursor = false, isSaveLayout = true, activeTime?: string) {
+    public addTab(tab: Tab, keepCursor = false, isSaveLayout = true, activeTime?: string, replaceTabID?: string) {
         if (keepCursor) {
             tab.headElement?.classList.remove("item--focus");
             tab.panelElement.classList.add("fn__none");
@@ -841,11 +858,21 @@ export class Wnd {
             tab.callback(tab);
         }
 
+        // 预览切换先移除被替换的页签，再检查数量上限，避免关闭无关页签。
+        let replacement: boolean | Promise<boolean> = false;
+        if (replaceTabID && replaceTabID !== tab.id) {
+            replacement = this.removeTab(replaceTabID, false, false, false);
+        }
+
         // 移除 centerLayout 中的 empty
         if (this.parent.type === "center" && this.children.length === 2 && !this.children[0].headElement) {
             this.removeTab(this.children[0].id);
         } else if (this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
-            this.removeOverCounter(isSaveLayout);
+            if (typeof replacement === "boolean") {
+                void this.removeOverCounter(isSaveLayout);
+            } else {
+                void replacement.then(() => this.removeOverCounter(isSaveLayout));
+            }
         }
         /// #if !BROWSER
         setModelsHash();
@@ -865,108 +892,113 @@ export class Wnd {
         if (!target || this.headersElement.children.length === 0) {
             return;
         }
-        if (!window.siyuan.menus.menu.element.classList.contains("fn__none") &&
+        if (focus && !window.siyuan.menus.menu.element.classList.contains("fn__none") &&
             window.siyuan.menus.menu.element.getAttribute("data-name") === Constants.MENU_TAB_LIST) {
-            window.siyuan.menus.menu.remove();
             return;
         }
-        window.siyuan.menus.menu.remove();
-        window.siyuan.menus.menu.element.classList.add("b3-menu--list");
-        Array.from(this.headersElement.children).forEach((item: HTMLElement) => {
-            const iconElement = item.querySelector(".item__icon");
-            const graphicElement = item.querySelector(".item__graphic");
-            let iconHTML = undefined;
-            if (iconElement) {
-                if (iconElement.firstElementChild?.tagName === "IMG") {
-                    // 图标为图片的文档
-                    iconHTML = `<img src="${iconElement.firstElementChild.getAttribute("src")}"  class="b3-menu__icon">`;
-                } else {
-                    // 有图标的文档
-                    iconHTML = `<span class="b3-menu__icon">${iconElement.innerHTML}</span>`;
-                }
-            } else if (!graphicElement) {
-                // 没有图标的文档
-                iconHTML = getFileTreeIconHTML("", "file", "b3-menu__icon", true);
-            }
-            window.siyuan.menus.menu.append(new MenuItem({
-                label: escapeHtml(item.querySelector(".item__text").textContent),
-                action: "iconCloseRound",
-                iconHTML,
-                icon: graphicElement ? graphicElement.firstElementChild.getAttribute("xlink:href").substring(1) : "",
-                bind: (element) => {
-                    element.addEventListener("click", (itemEvent) => {
-                        if (hasClosestByClassName(itemEvent.target as Element, "b3-menu__action")) {
-                            this.removeTab(item.getAttribute("data-id"));
-                            if (element.previousElementSibling || element.nextElementSibling) {
-                                element.remove();
-                                setPosition(window.siyuan.menus.menu.element, rect.left + rect.width - window.siyuan.menus.menu.element.clientWidth, rect.top + rect.height);
-                            } else {
-                                window.siyuan.menus.menu.remove();
-                            }
+        toggleMenu({
+            target: target,
+            toggle: !focus,
+            build: (_menu, session) => {
+                window.siyuan.menus.menu.element.classList.add("b3-menu--list");
+                Array.from(this.headersElement.children).forEach((item: HTMLElement) => {
+                    const iconElement = item.querySelector(".item__icon");
+                    const graphicElement = item.querySelector(".item__graphic");
+                    let iconHTML = undefined;
+                    if (iconElement) {
+                        if (iconElement.firstElementChild?.tagName === "IMG") {
+                            // 图标为图片的文档
+                            iconHTML = `<img src="${iconElement.firstElementChild.getAttribute("src")}"  class="b3-menu__icon">`;
                         } else {
-                            this.switchTab(item, true);
-                            this.showHeading();
-                            window.siyuan.menus.menu.remove();
+                            // 有图标的文档
+                            iconHTML = `<span class="b3-menu__icon">${iconElement.innerHTML}</span>`;
                         }
-                        itemEvent.preventDefault();
-                        itemEvent.stopPropagation();
-                    });
-                },
-                current: item.classList.contains("item--focus")
-            }).element);
-        });
-        window.siyuan.menus.menu.element.setAttribute("data-name", Constants.MENU_TAB_LIST);
-        const rect = target.getBoundingClientRect();
-        window.siyuan.menus.menu.popup({
-            x: rect.left + rect.width,
-            y: rect.top + rect.height,
-            h: rect.height,
-            isLeft: true
-        });
-        if (focus) {
-            const menu = window.siyuan.menus.menu;
-            const activeElement = document.activeElement;
-            const currentElement = menu.element.querySelector<HTMLElement>(".b3-menu__item--selected") ||
-                menu.element.querySelector<HTMLElement>(".b3-menu__item");
-            currentElement?.classList.add("b3-menu__item--current");
-            currentElement?.focus({preventScroll: true});
-            currentElement?.scrollIntoView({block: "nearest"});
-            // 仅在焦点仍位于菜单内时恢复，避免页签切换后抢回原编辑器焦点。
-            menu.removeCB = () => {
-                if (activeElement instanceof HTMLElement && activeElement.isConnected &&
-                    menu.element.contains(document.activeElement)) {
-                    activeElement.focus({preventScroll: true});
+                    } else if (!graphicElement) {
+                        // 没有图标的文档
+                        iconHTML = getFileTreeIconHTML("", "file", "b3-menu__icon", true);
+                    }
+                    window.siyuan.menus.menu.append(new MenuItem({
+                        label: escapeHtml(item.querySelector(".item__text").textContent),
+                        action: "iconCloseRound",
+                        iconHTML,
+                        icon: graphicElement ? graphicElement.firstElementChild.getAttribute("xlink:href").substring(1) : "",
+                        bind: (element) => {
+                            copyDocumentTitlePreview(item.querySelector(".item__text"), element.querySelector(".b3-menu__label"));
+                            element.addEventListener("click", (itemEvent) => {
+                                if (hasClosestByClassName(itemEvent.target as Element, "b3-menu__action")) {
+                                    const closed = (success: boolean) => {
+                                        if (!success || !session.isCurrent() || !element.isConnected) return;
+                                        if (element.previousElementSibling || element.nextElementSibling) {
+                                            element.remove();
+                                            setPosition(window.siyuan.menus.menu.element, rect.left + rect.width - window.siyuan.menus.menu.element.clientWidth, rect.top + rect.height);
+                                        } else {
+                                            window.siyuan.menus.menu.remove();
+                                        }
+                                    };
+                                    const result = this.removeTab(item.getAttribute("data-id"));
+                                    if (typeof result === "boolean") {
+                                        closed(result);
+                                    } else {
+                                        void result.then(closed);
+                                    }
+                                } else {
+                                    this.switchTab(item, true);
+                                    this.showHeading();
+                                    window.siyuan.menus.menu.remove();
+                                }
+                                itemEvent.preventDefault();
+                                itemEvent.stopPropagation();
+                            });
+                        },
+                        current: item.classList.contains("item--focus")
+                    }).element);
+                });
+                window.siyuan.menus.menu.element.setAttribute("data-name", Constants.MENU_TAB_LIST);
+                const rect = target.getBoundingClientRect();
+                session.show(() => window.siyuan.menus.menu.popup({
+                    x: rect.left + rect.width,
+                    y: rect.top + rect.height,
+                    h: rect.height,
+                    isLeft: true
+                }));
+                if (focus) {
+                    const menu = window.siyuan.menus.menu;
+                    const activeElement = document.activeElement;
+                    const currentElement = menu.element.querySelector<HTMLElement>(".b3-menu__item--selected") ||
+                        menu.element.querySelector<HTMLElement>(".b3-menu__item");
+                    currentElement?.classList.add("b3-menu__item--current");
+                    currentElement?.focus({preventScroll: true});
+                    currentElement?.scrollIntoView({block: "nearest"});
+                    // 仅在焦点仍位于菜单内时恢复，避免页签切换后抢回原编辑器焦点。
+                    menu.removeCB = () => {
+                        if (activeElement instanceof HTMLElement && activeElement.isConnected &&
+                            menu.element.contains(document.activeElement)) {
+                            activeElement.focus({preventScroll: true});
+                        }
+                    };
                 }
-            };
-        }
+
+            },
+        });
     }
 
-    private removeOverCounter(isSaveLayout = false) {
-        let removeId: string;
-        let openTime: string;
-        let removeCount = 0;
-        this.children.forEach((item, index) => {
-            if (!item.headElement) {
-                return;
+    private async removeOverCounter(isSaveLayout = false) {
+        if (this.removingOverCounter) return;
+        this.removingOverCounter = true;
+        const attempted = new Set<Tab>();
+        try {
+            while (this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
+                const candidates = this.children.filter(item => !attempted.has(item) && item.headElement &&
+                    !item.headElement.classList.contains("item--pin") && !item.headElement.classList.contains("item--focus"));
+                candidates.sort((a, b) => (a.headElement.getAttribute("data-activetime") || "").localeCompare(
+                    b.headElement.getAttribute("data-activetime") || ""));
+                const item = candidates[0];
+                if (!item) break;
+                attempted.add(item);
+                await this.removeTab(item.id, false, false, isSaveLayout);
             }
-            if (item.headElement.classList.contains("item--pin") || item.headElement.classList.contains("item--focus")) {
-                return;
-            }
-            removeCount++;
-            if (!openTime) {
-                openTime = item.headElement.getAttribute("data-activetime");
-                removeId = this.children[index].id;
-            } else if (item.headElement.getAttribute("data-activetime") < openTime) {
-                openTime = item.headElement.getAttribute("data-activetime");
-                removeId = this.children[index].id;
-            }
-        });
-        if (removeId) {
-            this.removeTab(removeId, false, false, isSaveLayout);
-            removeCount--;
-        }
-        if (removeCount > 0 && this.children.length > window.siyuan.config.fileTree.maxOpenTabCount) {
-            this.removeOverCounter(isSaveLayout);
+        } finally {
+            this.removingOverCounter = false;
         }
     }
 
@@ -981,18 +1013,30 @@ export class Wnd {
                 }
             });
         }
-        model.destroy();
+        try {
+            model.destroy();
+        } catch (error) {
+            if (!(model instanceof Custom)) { throw error; }
+            console.error("Plugin tab destroy failed:", error);
+        }
         model.send("closews", {});
     }
 
-    private removeTabAction = (id: string, isBatchClose = false, animate = true, isSaveLayout = true) => {
+    private removeTabAction = (id: string, isBatchClose = false, animate = true, isSaveLayout = true, sourceRemoved = false) => {
+        let removedTab = false;
         this.children.find((item, index) => {
             if (item.id !== id) {
                 return;
             }
+            removedTab = !!item.headElement;
+            /// #if !BROWSER
+            if (!sourceRemoved && removedTab && item.model instanceof Editor && item.model.editor) {
+                flushClosingWindowTab(item.model.editor);
+            }
+            /// #endif
             window.siyuan.storage[Constants.LOCAL_CLOSED_TABS] =
                 sanitizeClosedTabs(window.siyuan.storage[Constants.LOCAL_CLOSED_TABS]);
-            if (item.headElement && !isSensitiveTab(item)) {
+            if (item.headElement && !isSensitiveTab(item) && !isCustomTabUninstalled(item)) {
                 const tabJSON = {};
                 layoutToJSON(item, tabJSON);
                 window.siyuan.storage[Constants.LOCAL_CLOSED_TABS].push(tabJSON);
@@ -1002,9 +1046,13 @@ export class Wnd {
             }
             setStorageVal(Constants.LOCAL_CLOSED_TABS, window.siyuan.storage[Constants.LOCAL_CLOSED_TABS]);
             if (item.model instanceof Custom && item.model.beforeDestroy) {
-                item.model.beforeDestroy();
+                try {
+                    item.model.beforeDestroy();
+                } catch (error) {
+                    console.error("Plugin tab beforeDestroy failed:", error);
+                }
             }
-            if (item.model instanceof Editor) {
+            if (!sourceRemoved && item.model instanceof Editor) {
                 saveBackScroll(item.model.editor.protyle);
                 saveScroll(item.model.editor.protyle);
                 // 更新文档关闭时间（批量关闭页签时由 closeTabByType 批量处理，这里不单独调用）
@@ -1095,25 +1143,42 @@ export class Wnd {
         webFrame.clearCache();
         ipcRenderer.send(Constants.SIYUAN_CMD, "clearCache");
         setModelsHash();
+        if (removedTab) {
+            void closeWindowAfterLastTab(this.app);
+        }
         /// #endif
     };
 
-    public removeTab(id: string, isBatchClose = false, animate = true, isSaveLayout = true) {
+    // 源已关闭或删除时立即清理明文，不能再等待该源上的保存和上传。
+    // Pending title saves resolve to the close result; other paths remain synchronous.
+    public removeTab(id: string, isBatchClose = false, animate = true, isSaveLayout = true, sourceRemoved = false): boolean | Promise<boolean> {
         for (let index = 0; index < this.children.length; index++) {
             const item = this.children[index];
             if (item.id === id) {
+                if (sourceRemoved) {
+                    this.removeTabAction(id, isBatchClose, false, isSaveLayout, true);
+                    return true;
+                }
                 if ((item.model instanceof Editor) && item.model.editor?.protyle) {
-                    if (item.model.editor.protyle.upload.isUploading) {
+                    if (item.model.editor.isUploading()) {
                         showMessage(window.siyuan.languages.uploading);
-                        return;
+                        return false;
+                    }
+                    const model = item.model;
+                    const pending = flushDocumentTitleBeforeClose(model.editor,
+                        () => this.removeTabAction(id, isBatchClose, animate, isSaveLayout),
+                        () => this.children.includes(item) && item.model === model);
+                    if (pending) {
+                        return pending;
                     }
                     this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
                 } else {
                     this.removeTabAction(id, isBatchClose, animate, isSaveLayout);
                 }
-                return;
+                return true;
             }
         }
+        return false;
     }
 
     public moveTab(tab: Tab, nextId?: string) {

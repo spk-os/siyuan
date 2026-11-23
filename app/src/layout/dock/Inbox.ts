@@ -1,3 +1,4 @@
+import {toggleMenu} from "../../menus/menuToggle";
 /// #if !MOBILE
 import {Tab} from "../Tab";
 import {setPanelFocus} from "../util";
@@ -10,8 +11,10 @@ import {Model} from "../Model";
 import {needSubscribe} from "../../util/needSubscribe";
 import {MenuItem} from "../../menus/Menu";
 import {confirmDialog} from "../../dialog/confirmDialog";
-import {replaceFileName} from "../../editor/rename";
-import {getDisplayName, movePathTo, pathPosix} from "../../util/pathName";
+import {normalizeDocumentTitle} from "../../editor/rename";
+import {movePathTo} from "../../util/pathName";
+import {documentCreateRequest} from "../../util/documentCreate";
+import {createConfiguredDocument} from "../../util/configuredDocument";
 import type {App} from "../../index";
 import {getCloudURL} from "../../config/util/about";
 import {hasClosestByClassName} from "../../protyle/util/hasClosest";
@@ -26,6 +29,8 @@ export class Inbox extends Model {
     private currentPage = 1;
     private pageCount = 1;
     private data: { [key: string]: IInbox } = {};
+    private moveTargets = new Map<string, {notebook: string; path: string; id: string; committed?: boolean}>();
+    private moving = false;
 
     constructor(app: App, tab: Tab | Element) {
         super({app});
@@ -35,7 +40,7 @@ export class Inbox extends Model {
             this.element = tab.panelElement;
         }
         /// #if MOBILE
-        this.element.innerHTML = `<div class="toolbar toolbar--border toolbar--dark">
+        this.element.innerHTML = `<div class="toolbar toolbar--dark">
     <div class="fn__space"></div>
     <div class="toolbar__text">
         ${window.siyuan.languages.inbox}
@@ -50,7 +55,7 @@ export class Inbox extends Model {
     <svg data-type="more" class="toolbar__icon fn__none"><use xlink:href='#iconMore'></use></svg>
 </div>
 <div class="fn__loading fn__none">
-    <img width="64px" src="/stage/loading-pure.svg"></div>
+    <span class="b3-loading" aria-hidden="true"></span></div>
 </div>
 <div class="fn__flex-1 fn__none inboxDetails fn__flex-column" style="min-height: auto;background-color: var(--b3-theme-background)"></div>
 <div class="fn__flex-1"></div>`;
@@ -72,7 +77,7 @@ export class Inbox extends Model {
     <span data-type="min" class="block__icon ariaLabel" data-position="north" aria-label="${window.siyuan.languages.min}${updateHotkeyAfterTip(window.siyuan.config.keymap.general.closeTab.custom)}"><svg><use xlink:href="#iconMin"></use></svg></span>
 </div>
 <div class="fn__loading fn__none">
-    <img width="64px" src="/stage/loading-pure.svg"></div>
+    <span class="b3-loading" aria-hidden="true"></span></div>
 </div>
 <div class="fn__flex-1 fn__none inboxDetails fn__flex-column" style="min-height: auto;background-color: var(--b3-theme-background)"></div>
 <div class="fn__flex-1"></div>`;
@@ -215,7 +220,7 @@ export class Inbox extends Model {
     <span data-type="back" class="toolbar__text fn__flex-1">${data.shorthandTitle}</span>
     ${linkHTML}
 </div>
-<div class="b3-typography b3-typography--default" style="padding: 0 8px 8px">
+<div class="b3-typography b3-typography--default" style="padding: 0 8px calc(8px + var(--android-navigation-bar-height, 0px))">
 ${data.shorthandContent}
 </div>`);
         /// #else
@@ -239,7 +244,7 @@ ${data.shorthandContent}
     private genItemHTML(item: IInbox) {
         return sanitizeKernelHTML(`<li style="padding-left: 0" data-id="${item.oId}" class="b3-list-item">
     <span data-type="select" class="b3-list-item__action">
-        <svg><use xlink:href="#icon${this.selectIds.includes(item.oId) ? "Check" : "Uncheck"}"></use></svg> 
+        <svg><use xlink:href="#icon${this.selectIds.includes(item.oId) ? "Check" : "Uncheck"}"></use></svg>
     </span>
     <span class="fn__space--small"></span>
     <span class="b3-list-item__text" title="${item.shorthandTitle}${item.shorthandTitle === item.shorthandDesc ? "" : "\n" + item.shorthandDesc}">${item.shorthandTitle}</span>
@@ -248,85 +253,97 @@ ${data.shorthandContent}
     }
 
     private more(event: MouseEvent, itemElement?: HTMLElement) {
-        const detailsElement = this.element.querySelector(".inboxDetails");
-        window.siyuan.menus.menu.remove();
-        /// #if !MOBILE
-        window.siyuan.menus.menu.append(new MenuItem({
-            label: window.siyuan.languages.refresh,
-            icon: "iconRefresh",
-            click: () => {
-                this.refresh(itemElement);
-            }
-        }).element);
-        /// #endif
-        let ids: string[] = [];
-        if (itemElement) {
-            ids = [itemElement.dataset.id];
-        } else if (detailsElement.classList.contains("fn__none")) {
-            ids = this.selectIds;
-        } else {
-            ids = [detailsElement.getAttribute("data-id")];
-        }
-        if (ids.length > 0) {
-            window.siyuan.menus.menu.append(new MenuItem({
-                label: window.siyuan.languages.move,
-                icon: "iconMove",
-                click: () => {
-                    this.move(ids);
-                }
-            }).element);
-            let protyle: IProtyle;
-            /// #if MOBILE
-            protyle = window.siyuan.mobile.editor?.protyle;
-            /// #else
-            const tab = getActiveTab(false);
-            if (tab?.model instanceof Editor) {
-                protyle = tab.model.editor?.protyle;
-            }
-            /// #endif
-            if (protyle?.block.rootID && !protyle.disabled && !window.siyuan.config.readonly && !window.siyuan.isPublish) {
+        toggleMenu({
+            target: (event.target as Element).closest(".block__icon") || itemElement,
+            toggle: event.type !== "contextmenu",
+            build: (_menu, session) => {
+                const detailsElement = this.element.querySelector(".inboxDetails");
+
+                /// #if !MOBILE
                 window.siyuan.menus.menu.append(new MenuItem({
-                    label: window.siyuan.languages.insertToCurrentDoc,
-                    icon: "iconAdd",
+                    label: window.siyuan.languages.refresh,
+                    icon: "iconRefresh",
                     click: () => {
-                        void this.insertToCurrentDoc(ids, protyle.block.rootID);
+                        this.refresh(itemElement);
                     }
                 }).element);
-            }
-            window.siyuan.menus.menu.append(new MenuItem({
-                label: window.siyuan.languages.remove,
-                icon: "iconTrashcan",
-                click: () => {
-                    let removeTitle = "";
-                    ids.forEach((id, index) => {
-                        removeTitle += '<code class="fn__code">' + escapeHtml(this.data[id].shorthandTitle) + "</code>" + (index === ids.length - 1 ? "" : ", ");
-                    });
-                    confirmDialog(window.siyuan.languages.deleteOpConfirm, `${window.siyuan.languages.confirmDelete} ${removeTitle}?`, () => {
-                        if (itemElement) {
-                            this.remove([itemElement.dataset.id]);
-                        } else if (detailsElement.classList.contains("fn__none")) {
-                            this.remove();
-                        } else {
-                            this.remove([detailsElement.getAttribute("data-id")]);
-                        }
-                    }, undefined, true);
+                /// #endif
+                let ids: string[] = [];
+                if (itemElement) {
+                    ids = [itemElement.dataset.id];
+                } else if (detailsElement.classList.contains("fn__none")) {
+                    ids = this.selectIds;
+                } else {
+                    ids = [detailsElement.getAttribute("data-id")];
                 }
-            }).element);
-        }
-        emitOpenMenu({
-            type: "open-menu-inbox",
-            detail: {
-                ids,
-                element: itemElement || detailsElement,
+                if (ids.length > 0) {
+                    window.siyuan.menus.menu.append(new MenuItem({
+                        label: window.siyuan.languages.move,
+                        icon: "iconMove",
+                        click: () => {
+                            this.move(ids);
+                        }
+                    }).element);
+                    let protyle: IProtyle;
+                    /// #if MOBILE
+                    protyle = window.siyuan.mobile.editor?.protyle;
+                    /// #else
+                    const tab = getActiveTab(false);
+                    if (tab?.model instanceof Editor) {
+                        protyle = tab.model.editor?.protyle;
+                    }
+                    /// #endif
+                    if (protyle?.block.rootID && !protyle.disabled && !window.siyuan.config.readonly && !window.siyuan.isPublish) {
+                        window.siyuan.menus.menu.append(new MenuItem({
+                            label: window.siyuan.languages.insertToCurrentDoc,
+                            icon: "iconAdd",
+                            click: () => {
+                                void this.insertToCurrentDoc(ids, protyle.block.rootID);
+                            }
+                        }).element);
+                    }
+                    window.siyuan.menus.menu.append(new MenuItem({
+                        label: window.siyuan.languages.remove,
+                        icon: "iconTrashcan",
+                        click: () => {
+                            let removeTitle = "";
+                            ids.forEach((id, index) => {
+                                removeTitle += '<code class="fn__code">' + escapeHtml(this.data[id].shorthandTitle) + "</code>" + (index === ids.length - 1 ? "" : ", ");
+                            });
+                            confirmDialog({
+                                title: window.siyuan.languages.deleteOpConfirm,
+                                text: `${window.siyuan.languages.confirmDelete} ${removeTitle}?`,
+                                confirm: () => {
+                                    if (itemElement) {
+                                        this.remove([itemElement.dataset.id]);
+                                    } else if (detailsElement.classList.contains("fn__none")) {
+                                        this.remove();
+                                    } else {
+                                        this.remove([detailsElement.getAttribute("data-id")]);
+                                    }
+                                },
+                                isDelete: true,
+                            });
+                        }
+                    }).element);
+                }
+                emitOpenMenu({
+                    type: "open-menu-inbox",
+                    detail: {
+                        ids,
+                        element: itemElement || detailsElement,
+                    },
+                    separatorPosition: "top",
+                });
+                const button = (event.target as Element).closest("[data-type='more']");
+                const rect = (itemElement || button)?.getBoundingClientRect();
+                session.show(() => window.siyuan.menus.menu.popup({
+                    x: !itemElement && rect ? rect.left : event.clientX,
+                    y: rect ? rect.bottom : event.clientY + 16,
+                    h: rect ? rect.height : 0,
+                }));
+
             },
-            separatorPosition: "top",
-        });
-        const button = (event.target as Element).closest("[data-type='more']");
-        const rect = (itemElement || button)?.getBoundingClientRect();
-        window.siyuan.menus.menu.popup({
-            x: !itemElement && rect ? rect.left : event.clientX,
-            y: rect ? rect.bottom : event.clientY + 16,
-            h: rect ? rect.height : 0,
         });
     }
 
@@ -363,6 +380,9 @@ ${data.shorthandContent}
             if (response.code !== 0) {
                 return;
             }
+            for (const id of removeIds || this.selectIds) {
+                this.moveTargets.delete(id);
+            }
             if (removeIds) {
                 this.back();
                 for (let i = this.selectIds.length - 1; i >= 0; i--) {
@@ -382,28 +402,76 @@ ${data.shorthandContent}
     private move(ids: string[]) {
         movePathTo({
             cb: async (toPath, toNotebook) => {
-                for (let i = 0; i < ids.length; i++) {
-                    const idItem = ids[i];
-                    const response = await fetchSyncPost("/api/inbox/getShorthand", {
-                        id: idItem
-                    });
-                    if (response.code !== 0 || !response.data) {
-                        return;
-                    }
-                    this.data[response.data.oId] = response.data;
-                    let md = response.data.shorthandMd;
-                    if ("" === md && "" === response.data.shorthandContent && "" != response.data.shorthandURL) {
-                        md = "[" + response.data.shorthandTitle + "](" + response.data.shorthandURL + ")";
-                    }
-                    await fetchSyncPost("/api/filetree/createDoc", {
-                        notebook: toNotebook[0],
-                        path: pathPosix().join(getDisplayName(toPath[0], false, true), Lute.NewNodeID() + ".sy"),
-                        title: replaceFileName(response.data.shorthandTitle),
-                        md,
-                        listDocTree: true,
-                    });
+                if (this.moving) {
+                    return;
                 }
-                this.remove(ids);
+                this.moving = true;
+                const created: string[] = [];
+                let finished = false;
+                try {
+                    for (let i = 0; i < ids.length; i++) {
+                        const idItem = ids[i];
+                        let target = this.moveTargets.get(idItem);
+                        if (target && (target.notebook !== toNotebook[0] || target.path !== toPath[0])) {
+                            showMessage(`${escapeHtml(window.siyuan.languages.documentCreationRecovery)} ` +
+                                `<a href="siyuan://blocks/${target.id}">${target.id}</a>`, 0, "error");
+                            break;
+                        }
+                        if (target?.committed) {
+                            created.push(idItem);
+                            continue;
+                        }
+                        const response = await fetchSyncPost("/api/inbox/getShorthand", {
+                            id: idItem
+                        });
+                        if (response.code !== 0 || !response.data) {
+                            break;
+                        }
+                        this.data[response.data.oId] = response.data;
+                        let md = response.data.shorthandMd;
+                        if ("" === md && "" === response.data.shorthandContent && "" != response.data.shorthandURL) {
+                            md = "[" + response.data.shorthandTitle + "](" + response.data.shorthandURL + ")";
+                        }
+                        if (!target) {
+                            if ([...this.moveTargets.values()].filter(value => !value.committed).length >= 32) {
+                                showMessage(window.siyuan.languages.documentCreationLimit, 0, "error");
+                                break;
+                            }
+                            target = {notebook: toNotebook[0], path: toPath[0], id: Lute.NewNodeID()};
+                            this.moveTargets.set(idItem, target);
+                        }
+                        const request = documentCreateRequest(target.notebook, target.path, target.id,
+                            normalizeDocumentTitle(response.data.shorthandTitle), md);
+                        let completed = false;
+                        await createConfiguredDocument({
+                            notebook: target.notebook, contextID: request.parentID, purpose: "document",
+                            placement: "child", id: target.id, title: request.title.text,
+                        }, {
+                            plan: {notebook: target.notebook, title: request.title.text, steps: [request]},
+                            listDocTree: true,
+                            onCreated: () => {
+                                target.committed = true;
+                                completed = true;
+                                if (finished) {
+                                    this.remove([idItem]);
+                                } else {
+                                    created.push(idItem);
+                                }
+                            },
+                        });
+                        if (!completed) {
+                            break;
+                        }
+                    }
+                } catch (error) {
+                    showMessage(escapeHtml(error instanceof Error ? error.message : String(error)), 0, "error");
+                } finally {
+                    this.moving = false;
+                    finished = true;
+                    if (created.length) {
+                        this.remove(created);
+                    }
+                }
             },
             flashcard: false
         });

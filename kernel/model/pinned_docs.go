@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package model
 
 import (
@@ -28,8 +32,11 @@ type pinnedDocsStorage struct {
 
 type PinnedDoc struct {
 	ID, Notebook, Name, Path, Icon string
+	HSize, HMtime, HCtime          string
+	Name1, Alias, Memo, Bookmark   string
 	SubFileCount                   int
 	Unavailable                    bool
+	SpecTooNew                     bool
 	ChildrenSortMode               *int
 }
 
@@ -125,7 +132,7 @@ func GetPinnedDocs() (ret []PinnedDoc, err error) {
 		if info == nil {
 			continue
 		}
-		ial := box.docIAL(bt.Path)
+		ial, specTooNew := box.docIALWithSpec(bt.Path)
 		if ial == nil {
 			return nil, fmt.Errorf("cannot read pinned document [%s]", ref.ID)
 		}
@@ -136,9 +143,12 @@ func GetPinnedDocs() (ret []PinnedDoc, err error) {
 		if file == nil {
 			return nil, fmt.Errorf("cannot read pinned document [%s]", ref.ID)
 		}
+		doc.SpecTooNew = specTooNew
 		doc.Name, doc.Path, doc.Icon = file.Name, file.Path, file.Icon
+		doc.HSize, doc.HMtime, doc.HCtime = file.HSize, file.HMtime, file.HCtime
+		doc.Name1, doc.Alias, doc.Memo, doc.Bookmark = file.Name1, file.Alias, file.Memo, file.Bookmark
 		doc.ChildrenSortMode = file.ChildrenSortMode
-		if file.TitleEmpty {
+		if file.TitleEmpty || specTooNew && "" == file.Name {
 			doc.Name = Conf.Language(16)
 		}
 		if ref.ID == boxID {
@@ -192,7 +202,7 @@ func UpdatePinnedDocs(ids []string, action, targetID string, after bool) error {
 		if box == nil || box.Stat(bt.Path) == nil {
 			return fmt.Errorf("document [%s] is unavailable", id)
 		}
-		ial := box.docIAL(bt.Path)
+		ial, _ := box.docIALWithSpec(bt.Path)
 		if ial == nil {
 			return fmt.Errorf("cannot read pinned document [%s]", id)
 		}

@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package sql
 
@@ -128,6 +116,8 @@ func TestRenderGroupViewWithSourceReusesCardLayouts(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			view := test.newView("view")
+			view.GetBaseLayout().ShowIcon = false
+			view.GetBaseLayout().ShowRelationIcon = new(true)
 			group := test.newView("group")
 			group.GroupItemIDs = []string{"b", "a", "b"}
 			items := []av.Item{test.newTestItem("a"), test.newTestItem("b")}
@@ -140,6 +130,9 @@ func TestRenderGroupViewWithSourceReusesCardLayouts(t *testing.T) {
 			}
 
 			groupViewable := RenderGroupViewWithSource(attrView, view, group, "", source, false)
+			if group.GetBaseLayout().ShowIcon || !group.GetBaseLayout().EffectiveShowRelationIcon() {
+				t.Fatal("group icons differ from parent")
+			}
 			groupItems := test.getItems(groupViewable)
 			if 2 != len(groupItems) || "a" != groupItems[0].GetID() || "b" != groupItems[1].GetID() {
 				t.Fatalf("unexpected grouped items: %+v", groupItems)

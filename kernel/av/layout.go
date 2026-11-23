@@ -1,36 +1,64 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package av
+
+import "fmt"
+
+func (base *BaseLayout) EffectiveShowRelationIcon() bool {
+	// 旧版布局使用 showIcon 同时控制主键和关联、汇总内容中的图标。
+	if base.ShowRelationIcon == nil {
+		return base.ShowIcon
+	}
+	return *base.ShowRelationIcon
+}
+
+func (base *BaseLayout) SetShowIcon(show bool) {
+	// 独立修改主键开关前固定旧版关联图标设置，避免回退值随主键开关变化。
+	if base.ShowRelationIcon == nil {
+		base.ShowRelationIcon = new(base.ShowIcon)
+	}
+	base.ShowIcon = show
+}
+
+// MissingLayoutError 标识布局类型已保存、布局配置缺失的数据。
+type MissingLayoutError struct {
+	Type   LayoutType
+	ViewID string
+}
+
+func (err *MissingLayoutError) Error() string {
+	return fmt.Sprintf("%s layout missing in view [%s]", err.Type, err.ViewID)
+}
+
+// ValidateLayouts 统一校验日历和列表布局，拒绝损坏数据并保留原始文件。
+func (attrView *AttributeView) ValidateLayouts() error {
+	return attrView.validateLayouts(false)
+}
+
+func (attrView *AttributeView) validateLayouts(recovery bool) error {
+	attrView.restoreLegacyMapColumns()
+	if err := attrView.validateCalendarLayouts(recovery); err != nil {
+		return err
+	}
+	return attrView.validateListLayouts(recovery)
+}
 
 // BaseLayout 描述了布局的基础结构。
 type BaseLayout struct {
 	Spec int    `json:"spec"` // 布局格式版本
 	ID   string `json:"id"`   // 布局 ID
 
-	ShowIcon  bool `json:"showIcon"`  // 是否显示字段图标
-	WrapField bool `json:"wrapField"` // 是否换行字段内容
+	ShowRelationIcon *bool `json:"showRelationIcon,omitempty"` // 是否显示关联、汇总条目图标；缺失或为 null 时沿用 showIcon
+	ShowIcon         bool  `json:"showIcon"`                   // 是否显示主键条目图标
+	WrapField        bool  `json:"wrapField"`                  // 是否换行字段内容
 
-	// TODO 以下三个字段已经废弃，计划于 2026 年 6 月 30 日后删除 https://github.com/siyuan-note/siyuan/issues/15162
-
-	//Deprecated
+	// Deprecated: 仅用于读取和升级旧版布局，过滤规则由 View.Filters 维护。
 	Filters []*ViewFilter `json:"filters,omitempty"` // 过滤规则
-	//Deprecated
+	// Deprecated: 仅用于读取和升级旧版布局，排序规则由 View.Sorts 维护。
 	Sorts []*ViewSort `json:"sorts,omitempty"` // 排序规则
-	//Deprecated
+	// Deprecated: 仅用于读取和升级旧版布局，分页大小由 View.PageSize 维护。
 	PageSize int `json:"pageSize,omitempty"` // 每页条目数
 }
 
@@ -62,7 +90,8 @@ type BaseInstance struct {
 	Sorts             []*ViewSort             `json:"sorts"`            // 排序规则
 	Group             *ViewGroup              `json:"group"`            // 分组规则
 	PageSize          int                     `json:"pageSize"`         // 每页项目数
-	ShowIcon          bool                    `json:"showIcon"`         // 是否显示字段图标
+	ShowRelationIcon  bool                    `json:"showRelationIcon"` // 是否显示关联、汇总条目图标，已解析旧版布局的 showIcon 回退值
+	ShowIcon          bool                    `json:"showIcon"`         // 是否显示主键条目图标
 	WrapField         bool                    `json:"wrapField"`        // 是否换行字段内容
 
 	GroupKey    *Key       `json:"groupKey,omitempty"`   // 分组字段
@@ -73,18 +102,45 @@ type BaseInstance struct {
 	GroupHidden int        `json:"groupHidden"`          // 分组是否隐藏，0：显示，1：空白隐藏，2：手动隐藏
 }
 
-func NewViewBaseInstance(view *View) *BaseInstance {
-	showIcon, wrapField := true, false
+// GetBaseLayout 返回当前布局的基础设置，布局缺失时返回 nil。
+// 表格、列表和日历共用表格布局的基础设置。
+func (view *View) GetBaseLayout() *BaseLayout {
 	switch view.LayoutType {
 	case LayoutTypeTable, LayoutTypeList, LayoutTypeCalendar:
-		showIcon = view.GetTableLayout().ShowIcon
-		wrapField = view.GetTableLayout().WrapField
+		if table := view.GetTableLayout(); nil != table {
+			return table.BaseLayout
+		}
 	case LayoutTypeGallery:
-		showIcon = view.Gallery.ShowIcon
-		wrapField = view.Gallery.WrapField
+		if nil != view.Gallery {
+			return view.Gallery.BaseLayout
+		}
 	case LayoutTypeKanban:
-		showIcon = view.Kanban.ShowIcon
-		wrapField = view.Kanban.WrapField
+		if nil != view.Kanban {
+			return view.Kanban.BaseLayout
+		}
+	}
+	return nil
+}
+
+// GetCardSettings 返回卡片类布局共有的卡片设置，其他布局返回 nil。
+func (view *View) GetCardSettings() *CardSettings {
+	switch view.LayoutType {
+	case LayoutTypeGallery:
+		if nil != view.Gallery {
+			return &view.Gallery.CardSettings
+		}
+	case LayoutTypeKanban:
+		if nil != view.Kanban {
+			return &view.Kanban.CardSettings
+		}
+	}
+	return nil
+}
+
+func NewViewBaseInstance(view *View) *BaseInstance {
+	showIcon, showRelationIcon, wrapField := true, true, false
+	if base := view.GetBaseLayout(); nil != base {
+		showIcon, showRelationIcon, wrapField = base.ShowIcon, base.EffectiveShowRelationIcon(), base.WrapField
 	}
 	return &BaseInstance{
 		ConditionalColors: view.EffectiveConditionalColors(),
@@ -103,6 +159,7 @@ func NewViewBaseInstance(view *View) *BaseInstance {
 		GroupHidden:       view.GroupHidden,
 		PageSize:          view.PageSize,
 		ShowIcon:          showIcon,
+		ShowRelationIcon:  showRelationIcon,
 		WrapField:         wrapField,
 	}
 }

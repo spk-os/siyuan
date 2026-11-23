@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
@@ -166,7 +154,7 @@ func rewriteTreeAssetReferences(tree *parse.Tree, options assetReferenceRewriteO
 		tree.Root.SetIALAttr("title-img", strings.Replace(titleImg, titleImgPath, rewritten, 1))
 	}
 
-	treenode.WalkWithTabTitles(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
+	treenode.WalkWithInlineTitles(tree.Root, func(node *ast.Node, entering bool) ast.WalkStatus {
 		if !entering {
 			return ast.WalkContinue
 		}
@@ -187,6 +175,11 @@ func rewriteTreeAssetReferences(tree *parse.Tree, options assetReferenceRewriteO
 		}
 
 		switch node.Type {
+		case ast.NodeImage:
+			reference := treenode.ImageLivePhotoVideo(node)
+			if rewritten := rewriteAssetReference(reference, options); rewritten != reference {
+				treenode.SetImageLivePhotoVideo(node, rewritten)
+			}
 		case ast.NodeLinkDest:
 			reference := node.TokensStr()
 			if rewritten := rewriteAssetReference(reference, options); rewritten != reference {
@@ -234,10 +227,10 @@ func rewriteAttributeViewValueAssetReferences(value *av.Value, options assetRefe
 }
 
 func rewriteAttributeViewRichAssetReferences(value *av.Value, options assetReferenceRewriteOptions) (updated bool) {
-	if nil == value || nil == value.Text || nil == value.Text.Rich {
+	if nil == value {
 		return
 	}
-	tree, err := av.ParseValueTextRich(value.Text.Rich)
+	tree, err := av.RichValueTree(value)
 	if nil != err || nil == tree {
 		return
 	}
@@ -246,6 +239,12 @@ func rewriteAttributeViewRichAssetReferences(value *av.Value, options assetRefer
 			return ast.WalkContinue
 		}
 		switch node.Type {
+		case ast.NodeImage:
+			reference := treenode.ImageLivePhotoVideo(node)
+			if rewritten := rewriteAssetReference(reference, options); rewritten != reference {
+				treenode.SetImageLivePhotoVideo(node, rewritten)
+				updated = true
+			}
 		case ast.NodeLinkDest:
 			reference := node.TokensStr()
 			if rewritten := rewriteAssetReference(reference, options); rewritten != reference {
@@ -279,17 +278,7 @@ func rewriteAttributeViewRichAssetReferences(value *av.Value, options assetRefer
 		return
 	}
 
-	oldRichContent, oldContent := value.Text.Rich.Content, value.Text.Content
-	richContent, err := av.RenderValueTextRich(tree)
-	if nil != err {
-		return false
-	}
-	value.Text.Rich.Content = richContent
-	if err = value.Text.NormalizeRichContent(); nil != err {
-		value.Text.Rich.Content, value.Text.Content = oldRichContent, oldContent
-		return false
-	}
-	return true
+	return av.SetRichValueTree(value, tree) == nil
 }
 
 func rewriteAttributeViewFileAnnotationReference(reference string, options assetReferenceRewriteOptions) string {
@@ -315,7 +304,7 @@ func rewriteAttributeViewDataAssetReferences(data []byte, options assetReference
 	if !rewriteAttributeViewAssetReferences(attrView, options) {
 		return data, nil
 	}
-	if util.UseSingleLineSave {
+	if util.UseSingleLineSave.Load() {
 		return gulu.JSON.MarshalJSON(attrView)
 	}
 	return gulu.JSON.MarshalIndentJSON(attrView, "", "\t")

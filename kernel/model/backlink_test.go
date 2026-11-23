@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
@@ -20,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/siyuan-note/siyuan/kernel/sql"
 )
 
 func TestQuoteFTSPhrase(t *testing.T) {
@@ -65,5 +55,20 @@ func TestBuildBackmentionQueryBindsValues(t *testing.T) {
 	expectedArgs = []any{matchExpression, rootID, beforeID, 64}
 	if !reflect.DeepEqual(args, expectedArgs) {
 		t.Fatalf("expected arguments %#v, got %#v", expectedArgs, args)
+	}
+}
+
+func TestBackmentionAnchorKeywordsRespectPublishAccess(t *testing.T) {
+	refs := []*sql.Ref{
+		nil,
+		{BlockID: "20260906170001-publc01", Content: "Public anchor"},
+		{BlockID: "20260906170002-hiddn01", Content: "Private anchor"},
+	}
+	if got := backmentionAnchorKeywords(refs, nil); !reflect.DeepEqual(got, []string{"Public anchor", "Private anchor"}) {
+		t.Fatalf("unfiltered anchor keywords changed: %#v", got)
+	}
+	accessible := func(id string) bool { return "20260906170002-hiddn01" != id }
+	if got := backmentionAnchorKeywords(refs, accessible); !reflect.DeepEqual(got, []string{"Public anchor"}) {
+		t.Fatalf("inaccessible anchor keyword was returned: %#v", got)
 	}
 }

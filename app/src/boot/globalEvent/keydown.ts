@@ -5,7 +5,6 @@ import {
     copyPlainText,
     isMac,
     isNotCtrl,
-    isOnlyMeta,
     updateHotkeyTip,
     writeText
 } from "../../protyle/util/compatibility";
@@ -14,7 +13,6 @@ import {
     hasClosestBlock,
     hasClosestByAttribute,
     hasClosestByClassName,
-    hasTopClosestByTag,
 } from "../../protyle/util/hasClosest";
 import {newFile} from "../../util/newFile";
 import {Constants} from "../../constants";
@@ -26,25 +24,30 @@ import {Editor} from "../../editor";
 import {toggleEditMode} from "../../protyle/util/toggleEditMode";
 import {rename} from "../../editor/rename";
 import {Files} from "../../layout/dock/Files";
+import {getActiveDocTreeController} from "../../layout/dock/docTree/DocTreeController";
 import {newDailyNote} from "../../util/mount";
 import {hideElements} from "../../protyle/ui/hideElements";
 import {fetchPost} from "../../util/fetch";
 import {goBack, goForward} from "../../util/backForward";
-import {getDisplayName, getNotebookName, isEncryptedBox} from "../../util/pathName";
+import {getDocDisplayName, getDisplayName, getNotebookName, isEncryptedBox} from "../../util/pathName";
 import {openFileById} from "../../editor/util";
 import {getAllDocks, getAllEditor, getAllModels, getAllTabs} from "../../layout/getAll";
 import {getDockHotkey, getDockKeymap} from "../../layout/dock/hotkey";
 import {getKeymapBindings} from "../../util/keymapBindings";
-import {focusBlock, focusByRange, getBlockElementsByRange, selectBlocksByRange} from "../../protyle/util/selection";
+import {focusBlock, getBlockElementsByRange, selectBlocksByRange} from "../../protyle/util/selection";
+import {focusByRange} from "../../protyle/util/selectionOffsets";
 import {initFileMenu, initNavigationMenu} from "../../menus/navigation";
+import {toggleMenu} from "../../menus/menuToggle";
 import {bindMenuKeydown} from "../../menus/Menu";
 import {Dialog} from "../../dialog";
 import {getFileTreeIconHTML} from "../../emoji/fileTreeIcon";
-import {deleteFiles} from "../../editor/deleteFile";
+import {deleteDocTreeItems} from "../../editor/deleteFile";
+import {getDocTreeActionItems} from "../../menus/navigationSelection";
 import {escapeHtml} from "../../util/escape";
 import {syncGuide} from "../../sync/syncGuide";
-import {duplicateBlock, getStartEndElement, goEnd, goHome} from "../../protyle/wysiwyg/commonHotkey";
-import {getNextFileLi, getPreviousFileLi} from "../../protyle/wysiwyg/getBlock";
+import {duplicateBlock} from "../../protyle/wysiwyg/commonHotkey";
+import {handleDocumentBoundaryHotkey} from "../../protyle/util/documentBoundaryHotkey";
+import {handleDatabaseRowShortcut} from "../../command/databaseRowShortcut";
 import {Backlink} from "../../layout/dock/Backlink";
 /// #if !BROWSER
 import {setZoom} from "../../layout/topBar";
@@ -81,6 +84,7 @@ import {copyTextByType} from "../../protyle/toolbar/util";
 import {onlyProtyleCommand} from "./command/protyle";
 import {cancelDrag} from "./dragover";
 import {bindAVPanelKeydown} from "../../protyle/render/av/keydown";
+import {getAVCellPanelTarget} from "../../protyle/render/av/panelTarget";
 import {formatPainter} from "../../protyle/toolbar/FormatPainter";
 import {adjustEditorFontSize, type TEditorFontSizeAction} from "../../util/editorFontSize";
 import {areProtylePluginExtensionsEnabled} from "../../protyle/runtimeCapabilities";
@@ -241,7 +245,7 @@ const documentKeydown = (app: App, event: KeyboardEvent, protyle: IProtyle, rang
     if (!isFileFocus && matchHotKey(window.siyuan.config.keymap.editor.general.spaceRepetition, event) &&
         !window.siyuan.config.readonly && !isEncryptedBox(protyle.notebookId)) {
         fetchPost("/api/riff/getTreeRiffDueCards", {rootID: protyle.block.rootID}, (response) => {
-            openCardByData(app, response.data, "doc", protyle.block.rootID, protyle.title?.editElement.textContent || window.siyuan.languages.untitled);
+            openCardByData(app, response.data, "doc", protyle.block.rootID, getDocDisplayName(protyle.title?.getText() ?? "", !protyle.title?.getText().trim()), true);
         });
         event.preventDefault();
         return true;
@@ -289,7 +293,7 @@ const documentKeydown = (app: App, event: KeyboardEvent, protyle: IProtyle, rang
             rootId: protyle.block.rootID,
             notebookId: protyle.notebookId,
             useBlockId: protyle.block.showAll,
-            title: protyle.title ? (protyle.title.editElement.textContent || window.siyuan.languages.untitled) : null,
+            title: protyle.title ? getDocDisplayName(protyle.title.getText(), protyle.title.getText().trim() === "") : null,
         });
         return true;
     }
@@ -312,7 +316,7 @@ const documentKeydown = (app: App, event: KeyboardEvent, protyle: IProtyle, rang
             rootId: protyle.block.rootID,
             notebookId: protyle.notebookId,
             useBlockId: protyle.block.showAll,
-            title: protyle.title ? (protyle.title.editElement.textContent || window.siyuan.languages.untitled) : null,
+            title: protyle.title ? getDocDisplayName(protyle.title.getText(), protyle.title.getText().trim() === "") : null,
         });
         return true;
     }
@@ -322,7 +326,7 @@ const documentKeydown = (app: App, event: KeyboardEvent, protyle: IProtyle, rang
             app,
             rootId: protyle.block.rootID,
             notebookId: protyle.notebookId,
-            title: protyle.options.render.title ? (protyle.title.editElement.textContent || window.siyuan.languages.untitled) : "",
+            title: protyle.options.render.title ? getDocDisplayName(protyle.title.getText(), protyle.title.getText().trim() === "") : "",
             isPreview: !protyle.preview.element.classList.contains("fn__none")
         });
         return true;
@@ -354,7 +358,7 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
         !hasClosestByClassName(eventTarget, "protyle", true)) {
         return false;
     }
-    // 优先使用事件所属编辑器，避免只读正文获得焦点后仍命中其它编辑器的选区。
+    // 优先使用事件所属编辑器，避免只读正文获得焦点后仍命中其他编辑器的选区。
     let protyle = getAllEditor().find(item => item.protyle.element.contains(eventTarget))?.protyle;
     let range: Range;
     if (getSelection().rangeCount > 0) {
@@ -459,7 +463,7 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
         window.siyuan.config.keymap.editor.general.undo,
         window.siyuan.config.keymap.editor.general.redo,
     ].some(keymap => matchHotKey(keymap, event))) {
-        // 内容修改在编辑快捷键入口拦截，不阻断搜索、导航和其它全局操作。
+        // 内容修改在编辑快捷键入口拦截，不阻断搜索、导航和其他全局操作。
         event.preventDefault();
         return true;
     }
@@ -481,10 +485,13 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
         } else {
             const selectElement: Element[] = [];
             protyle.wysiwyg.element.querySelectorAll(".protyle-wysiwyg--select").forEach(item => {
-                selectElement.push(item);
+                const block = hasClosestBlock(item, true) || item;
+                if (!selectElement.includes(block)) {
+                    selectElement.push(block);
+                }
             });
             if (selectElement.length === 0) {
-                const nodeElement = hasClosestBlock(range.startContainer);
+                const nodeElement = hasClosestBlock(range.startContainer, true);
                 if (nodeElement) {
                     selectElement.push(nodeElement);
                 }
@@ -521,12 +528,13 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
         event.stopPropagation();
         let selectsElement: HTMLElement[] = Array.from(protyle.wysiwyg.element.querySelectorAll(".protyle-wysiwyg--select"));
         if (selectsElement.length === 0) {
-            const nodeElement = hasClosestBlock(range.startContainer);
+            const nodeElement = hasClosestBlock(range.startContainer, true);
             if (nodeElement) {
                 const rangeElements = range.collapsed ? [] : getBlockElementsByRange(range);
                 selectsElement = rangeElements.length > 0 ? rangeElements : [nodeElement];
             }
         }
+        selectsElement = Array.from(new Set(selectsElement.map(element => hasClosestBlock(element, true) || element)));
         duplicateBlock(selectsElement, protyle);
         return true;
     }
@@ -535,21 +543,8 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
     if (target.tagName !== "TABLE" && ["INPUT", "TEXTAREA"].includes(target.tagName)) {
         return false;
     }
-    // ctrl+home 光标移动到顶
-    if (!event.altKey && !event.shiftKey && isOnlyMeta(event) && event.key === "Home") {
-        goHome(protyle);
-        hideElements(["select"], protyle);
-        event.stopPropagation();
-        event.preventDefault();
-        return;
-    }
-    // ctrl+end 光标移动到尾
-    if (!event.altKey && !event.shiftKey && isOnlyMeta(event) && event.key === "End") {
-        goEnd(protyle);
-        hideElements(["select"], protyle);
-        event.stopPropagation();
-        event.preventDefault();
-        return;
+    if (handleDocumentBoundaryHotkey(protyle, event)) {
+        return true;
     }
     if (range && matchHotKey(window.siyuan.config.keymap.editor.general.focusBreadcrumb, event)) {
         if (protyle.breadcrumb?.focus(range)) {
@@ -609,7 +604,7 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
         if (hasClosestByClassName(range.startContainer, "protyle-title")) {
             copyTextByType([protyle.block.rootID], "ref");
         } else {
-            const nodeElement = hasClosestBlock(range.startContainer);
+            const nodeElement = hasClosestBlock(range.startContainer, true);
             if (!nodeElement) {
                 return false;
             }
@@ -618,7 +613,8 @@ const editKeydown = (app: App, event: KeyboardEvent) => {
                 copyPNGByLink(selectImgElement.querySelector("img").getAttribute("src"));
                 return true;
             }
-            const ids = Array.from(protyle.wysiwyg.element.querySelectorAll(".protyle-wysiwyg--select")).map(item => item.getAttribute("data-node-id"));
+            const ids = Array.from(new Set(Array.from(protyle.wysiwyg.element.querySelectorAll(".protyle-wysiwyg--select"))
+                .map(item => (hasClosestBlock(item, true) || item).getAttribute("data-node-id"))));
             if (ids.length > 0) {
                 copyTextByType(ids, "ref");
                 return true;
@@ -680,47 +676,36 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         return false;
     }
 
-    const liElements = Array.from(files.element.querySelectorAll(".b3-list-item--focus"));
+    const controller = getActiveDocTreeController(files.element.parentElement) || files.docTree;
+    const selectedItems = controller.getSelectedItems();
+    const actionItems = getDocTreeActionItems(selectedItems);
     if (dispatchPluginShortcut(app, event, "fileTreeShortcut", () => captureCommandContext({
-        app, source: "fileTreeShortcut", fileLiElements: liElements,
+        app, source: "fileTreeShortcut", fileLiElements: [],
     }))) {
         return true;
     }
 
-    if (liElements.length === 0) {
+    if (selectedItems.length === 0) {
         if (event.key.startsWith("Arrow") && isNotCtrl(event)) {
-            const liElement = files.element.querySelector(".b3-list-item");
-            if (liElement) {
-                liElement.classList.add("b3-list-item--focus");
-                files.lastSelectedElement = liElement;
-            }
+            void controller.focusBoundary("first");
             event.preventDefault();
+            return true;
         }
         return false;
     }
-    const topULElement = hasTopClosestByTag(liElements[0], "UL");
-    if (!topULElement) {
-        return false;
-    }
-    const notebookId = topULElement.getAttribute("data-url");
-    const pathString = liElements[0].getAttribute("data-path");
-    const isFile = liElements[0].getAttribute("data-type") === "navigation-file";
-    const ids: string[] = [];
-    liElements.forEach(item => {
-        if (item.getAttribute("data-type") === "navigation-file") {
-            ids.push(item.getAttribute("data-node-id"));
-        }
-    });
+    const {notebookId, path: pathString} = selectedItems[0];
+    const isFile = selectedItems[0].kind === "document";
+    const ids = actionItems.filter(item => item.kind === "document").map(item => item.id);
 
     if (matchHotKey(window.siyuan.config.keymap.editor.general.spaceRepetition, event) && !window.siyuan.config.readonly && !isEncryptedBox(notebookId)) {
         if (isFile) {
-            const id = liElements[0].getAttribute("data-node-id");
+            const id = selectedItems[0].id;
             fetchPost("/api/riff/getTreeRiffDueCards", {rootID: id}, (response) => {
-                openCardByData(app, response.data, "doc", id, getDisplayName(liElements[0].getAttribute("data-name"), false, true));
+                openCardByData(app, response.data, "doc", id, getDisplayName(selectedItems[0].name, false, true), true);
             });
         } else {
             fetchPost("/api/riff/getNotebookRiffDueCards", {notebook: notebookId}, (response) => {
-                openCardByData(app, response.data, "notebook", notebookId, getNotebookName(notebookId));
+                openCardByData(app, response.data, "notebook", notebookId, getNotebookName(notebookId), true);
             });
         }
         event.preventDefault();
@@ -743,7 +728,7 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         execByCommand({
             command: "addToDatabase",
             app,
-            fileLiElements: liElements
+            fileLiElements: []
         });
         event.preventDefault();
         return true;
@@ -753,7 +738,7 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         window.siyuan.menus.menu.remove();
         if (isFile) {
             const docInfoParam: BlockQueryRequestInput = {
-                id: liElements[0].getAttribute("data-node-id")
+                id: selectedItems[0].id
             };
             if (isEncryptedBox(notebookId)) {
                 docInfoParam.notebook = notebookId;
@@ -780,15 +765,21 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
     }
 
     if (matchHotKey(window.siyuan.config.keymap.general.openContextMenu, event)) {
-        const liRect = liElements[0].getBoundingClientRect();
-        if (isFile) {
-            initFileMenu(app, notebookId, pathString, liElements[0]).popup({
-                x: liRect.right - 15,
-                y: liRect.top + 15
-            });
-        } else {
-            initNavigationMenu(app, liElements[0] as HTMLElement).popup({x: liRect.right - 15, y: liRect.top + 15});
-        }
+        const selected = controller.getSelectedItems();
+        const version = controller.selectionVersion;
+        void toggleMenu({
+            toggle: false,
+            build: async (_menu, session) => {
+                const element = await controller.ensureRendered(selected[0].occurrenceKey);
+                if (!element || !session.isCurrent() || !controller.validateSelection(version, selected)) {
+                    return;
+                }
+                const rect = element.getBoundingClientRect();
+                const menu = isFile ? initFileMenu(app, notebookId, pathString, element) : initNavigationMenu(app, element);
+                session.show(() => menu.popup({x: rect.right - 15, y: rect.top + 15}));
+            },
+        });
+        event.preventDefault();
         return true;
     }
 
@@ -848,7 +839,7 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         execByCommand({
             command: "move",
             app,
-            fileLiElements: liElements
+            fileLiElements: []
         });
         event.preventDefault();
         return true;
@@ -858,7 +849,7 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         window.siyuan.menus.menu.remove();
         openFileById({
             app,
-            id: liElements[0].getAttribute("data-node-id"),
+            id: selectedItems[0].id,
             action: [Constants.CB_GET_FOCUS],
             position: "right",
         });
@@ -871,7 +862,7 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         execByCommand({
             command: "replace",
             app,
-            fileLiElements: liElements,
+            fileLiElements: [],
         });
         event.preventDefault();
         return true;
@@ -881,7 +872,7 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         execByCommand({
             command: "search",
             app,
-            fileLiElements: liElements,
+            fileLiElements: [],
         });
         event.preventDefault();
         return true;
@@ -892,179 +883,37 @@ const fileTreeKeydown = (app: App, event: KeyboardEvent) => {
         hasClosestByClassName(target, "protyle", true)) {
         return false;
     }
-    if (event.shiftKey) {
-        if (event.key === "ArrowUp") {
-            const startEndElement = getStartEndElement(liElements);
-            let previousElement: Element;
-            if (startEndElement.startElement.getBoundingClientRect().top >= startEndElement.endElement.getBoundingClientRect().top) {
-                previousElement = getPreviousFileLi(startEndElement.endElement) as Element;
-                if (previousElement) {
-                    previousElement.classList.add("b3-list-item--focus");
-                    previousElement.setAttribute("select-end", "true");
-                    startEndElement.endElement.removeAttribute("select-end");
-                }
-            } else {
-                startEndElement.endElement.classList.remove("b3-list-item--focus");
-                startEndElement.endElement.removeAttribute("select-end");
-                previousElement = getPreviousFileLi(startEndElement.endElement) as Element;
-                if (previousElement) {
-                    previousElement.setAttribute("select-end", "true");
-                }
-            }
-            if (previousElement) {
-                const previousRect = previousElement.getBoundingClientRect();
-                const fileRect = files.element.getBoundingClientRect();
-                if (previousRect.top < fileRect.top || previousRect.bottom > fileRect.bottom) {
-                    previousElement.scrollIntoView(previousRect.top < fileRect.top);
-                }
-            }
-        } else if (event.key === "ArrowDown") {
-            const startEndElement = getStartEndElement(liElements);
-            let nextElement: Element;
-            if (startEndElement.startElement.getBoundingClientRect().top <= startEndElement.endElement.getBoundingClientRect().top) {
-                nextElement = getNextFileLi(startEndElement.endElement) as Element;
-                if (nextElement) {
-                    nextElement.classList.add("b3-list-item--focus");
-                    nextElement.setAttribute("select-end", "true");
-                    startEndElement.endElement.removeAttribute("select-end");
-                }
-            } else {
-                startEndElement.endElement.classList.remove("b3-list-item--focus");
-                startEndElement.endElement.removeAttribute("select-end");
-                nextElement = getNextFileLi(startEndElement.endElement) as Element;
-                if (nextElement) {
-                    nextElement.setAttribute("select-end", "true");
-                }
-            }
-            if (nextElement) {
-                const nextRect = nextElement.getBoundingClientRect();
-                const fileRect = files.element.getBoundingClientRect();
-                if (nextRect.top < fileRect.top || nextRect.bottom > fileRect.bottom) {
-                    nextElement.scrollIntoView(nextRect.top < fileRect.top);
-                }
-            }
+    if (isNotCtrl(event) && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        const extend = event.shiftKey;
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            void controller.focusRelative(event.key === "ArrowUp" ? -1 : 1, extend);
+        } else if (event.key === "Home" || event.key === "End") {
+            void controller.focusBoundary(event.key === "Home" ? "first" : "last", extend);
+        } else if (!extend && event.key === "ArrowRight") {
+            void controller.expandFocused();
+        } else if (!extend && event.key === "ArrowLeft") {
+            void controller.collapseFocused();
+        } else {
+            return false;
         }
-        return;
-    } else if (isNotCtrl(event)) {
-        files.element.querySelector('[select-end="true"]')?.removeAttribute("select-end");
-        files.element.querySelector('[select-start="true"]')?.removeAttribute("select-start");
-        if ((event.key === "ArrowRight" && !liElements[0].querySelector(".b3-list-item__arrow--open") && !liElements[0].querySelector(".b3-list-item__toggle").classList.contains("fn__hidden")) ||
-            (event.key === "ArrowLeft" && liElements[0].querySelector(".b3-list-item__arrow--open"))) {
-            files.getLeaf(liElements[0], notebookId);
-            liElements.forEach((item, index) => {
-                if (index !== 0) {
-                    item.classList.remove("b3-list-item--focus");
-                }
-            });
-            event.preventDefault();
-            return true;
-        }
-        if (event.key === "ArrowLeft") {
-            let parentElement = liElements[0].parentElement.previousElementSibling;
-            if (parentElement) {
-                if (parentElement.tagName !== "LI") {
-                    parentElement = files.element.querySelector(".b3-list-item");
-                }
-                liElements.forEach((item) => {
-                    item.classList.remove("b3-list-item--focus");
-                });
-                parentElement.classList.add("b3-list-item--focus");
-                files.lastSelectedElement = parentElement;
-                const parentRect = parentElement.getBoundingClientRect();
-                const fileRect = files.element.getBoundingClientRect();
-                if (parentRect.top < fileRect.top || parentRect.bottom > fileRect.bottom) {
-                    parentElement.scrollIntoView(parentRect.top < fileRect.top);
-                }
-            }
-            event.preventDefault();
-            return true;
-        }
-        if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-            let nextElement = liElements[0];
-            while (nextElement) {
-                if (nextElement.nextElementSibling) {
-                    if (nextElement.nextElementSibling.tagName === "UL") {
-                        nextElement = nextElement.nextElementSibling.firstElementChild;
-                    } else {
-                        nextElement = nextElement.nextElementSibling;
-                    }
-                    break;
-                } else {
-                    if (nextElement.parentElement.classList.contains("fn__flex-1")) {
-                        break;
-                    } else {
-                        nextElement = nextElement.parentElement;
-                    }
-                }
-            }
-            if (nextElement.classList.contains("b3-list-item")) {
-                liElements.forEach((item) => {
-                    item.classList.remove("b3-list-item--focus");
-                });
-                nextElement.classList.add("b3-list-item--focus");
-                files.lastSelectedElement = nextElement;
-                const nextRect = nextElement.getBoundingClientRect();
-                const fileRect = files.element.getBoundingClientRect();
-                if (nextRect.top < fileRect.top || nextRect.bottom > fileRect.bottom) {
-                    nextElement.scrollIntoView(nextRect.top < fileRect.top);
-                }
-            }
-            event.preventDefault();
-            return true;
-        }
-        if (event.key === "ArrowUp") {
-            let previousElement = liElements[0];
-            while (previousElement) {
-                if (previousElement.previousElementSibling) {
-                    if (previousElement.previousElementSibling.tagName === "LI") {
-                        previousElement = previousElement.previousElementSibling;
-                    } else {
-                        const liElements = previousElement.previousElementSibling.querySelectorAll(".b3-list-item");
-                        previousElement = liElements[liElements.length - 1];
-                    }
-                    break;
-                } else {
-                    if (previousElement.parentElement.classList.contains("fn__flex-1")) {
-                        break;
-                    } else {
-                        previousElement = previousElement.parentElement;
-                    }
-                }
-            }
-            if (previousElement.classList.contains("b3-list-item")) {
-                liElements.forEach((item) => {
-                    item.classList.remove("b3-list-item--focus");
-                });
-                previousElement.classList.add("b3-list-item--focus");
-                files.lastSelectedElement = previousElement;
-                const previousRect = previousElement.getBoundingClientRect();
-                const fileRect = files.element.getBoundingClientRect();
-                if (previousRect.top < fileRect.top || previousRect.bottom > fileRect.bottom) {
-                    previousElement.scrollIntoView(previousRect.top < fileRect.top);
-                }
-            }
-            event.preventDefault();
-            return true;
-        }
+        event.preventDefault();
+        return true;
     }
     if (event.key === "Delete" || (event.key === "Backspace" && isMac())) {
         window.siyuan.menus.menu.remove();
         if (document.querySelector(`.b3-dialog--open[data-key="${Constants.DIALOG_CONFIRM}"]`)) {
             return;
         }
-        deleteFiles(liElements);
+        void deleteDocTreeItems(actionItems);
         return true;
     }
     if (event.key === "Enter") {
         window.siyuan.menus.menu.remove();
-        liElements.forEach(item => {
-            if (item.getAttribute("data-type") === "navigation-file") {
-                openFileById({app, id: item.getAttribute("data-node-id"), action: [Constants.CB_GET_FOCUS]});
+        actionItems.forEach(item => {
+            if (item.kind === "document") {
+                openFileById({app, id: item.id, action: [Constants.CB_GET_FOCUS]});
             } else {
-                const itemTopULElement = hasTopClosestByTag(item, "UL");
-                if (itemTopULElement) {
-                    files.getLeaf(item, itemTopULElement.getAttribute("data-url"));
-                }
+                void controller.toggle(item.occurrenceKey);
             }
         });
         return true;
@@ -1345,6 +1194,10 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
         return;
     }
 
+    if (handleDatabaseRowShortcut(app, event)) {
+        return;
+    }
+
     let readonlyBlockSelection: IProtyle;
     if (event.key === "Escape" && !event.isComposing && !event.repeat) {
         const selection = getSelection();
@@ -1458,7 +1311,12 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
                 return true;
             }
         });
-        if (openRecentDocsDialog) {
+        if (openRecentDocsDialog && openRecentDocsDialog.element.contains(event.target as Node) &&
+            !openRecentDocsDialog.element.hasAttribute("data-dialog-closing")) {
+            // 下拉菜单和按钮需要自行处理按键，Enter 不能转发为打开当前选中文档
+            if ((event.target as HTMLElement).closest("select, button")) {
+                return;
+            }
             event.preventDefault();
             dialogArrow(app, openRecentDocsDialog.element, event);
             return;
@@ -1466,7 +1324,7 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
     }
 
     if (matchHotKey(window.siyuan.config.keymap.general.recentDocs, event)) {
-        openRecentDocs();
+        openRecentDocs(true);
         event.preventDefault();
         return;
     }
@@ -1523,7 +1381,7 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
     }
     if (matchHotKey(window.siyuan.config.keymap.general.commandPanel, event)) {
         event.preventDefault();
-        commandPanel(app);
+        commandPanel(app, {openOnly: true});
         return;
     }
     const editorFontSizeCommand = EDITOR_FONT_SIZE_COMMANDS.find((item) =>
@@ -1544,7 +1402,7 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
         return;
     }
     if (matchHotKey(window.siyuan.config.keymap.general.dataHistory, event)) {
-        openHistory(app);
+        openHistory(app, "doc", true);
         event.preventDefault();
         return;
     }
@@ -1583,7 +1441,7 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
         event.preventDefault();
         return;
     }
-    if (!isTabWindow && !window.siyuan.config.readonly && matchHotKey(window.siyuan.config.keymap.general.config, event)) {
+    if (!window.siyuan.config.readonly && matchHotKey(window.siyuan.config.keymap.general.config, event)) {
         openSetting(app);
         event.preventDefault();
         return;
@@ -1603,8 +1461,9 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
         return;
     }
     if (!isTabWindow && matchHotKey(window.siyuan.config.keymap.general.riffCard, event)) {
-        openCard(app);
-        if (document.activeElement) {
+        openCard(app, true);
+        if (document.activeElement && !window.siyuan.dialogs.some(item =>
+            item.element.getAttribute("data-key") === Constants.DIALOG_OPENCARD)) {
             (document.activeElement as HTMLElement).blur();
         }
         event.preventDefault();
@@ -1666,9 +1525,9 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
         // 需放在 dialog 前，否则属性面板中修改日期会先关闭 dialog，只剩修改界面
         const avElement = document.querySelector(".av__panel");
         if (avElement) {
-            const selectCellElement = document.querySelector(".av__cell--select");
-            if (selectCellElement) {
-                focusBlock(hasClosestBlock(selectCellElement) as HTMLElement);
+            const blockElement = getAVCellPanelTarget(avElement);
+            if (blockElement?.classList.contains("av") && blockElement.getClientRects().length > 0) {
+                focusBlock(blockElement);
             }
             avElement.remove();
             return;
@@ -1739,7 +1598,8 @@ export const windowKeyDown = (app: App, event: KeyboardEvent) => {
     }
 
     if (!isTabWindow && matchHotKey(window.siyuan.config.keymap.general.mainMenu, event)) {
-        workspaceMenu(app, document.querySelector("#barWorkspace").getBoundingClientRect());
+        const target = document.querySelector("#barWorkspace");
+        workspaceMenu(app, target.getBoundingClientRect(), true, target);
         event.preventDefault();
         return;
     }

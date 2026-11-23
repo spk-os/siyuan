@@ -7,7 +7,7 @@ const UNICODE_17_EMOJI_RANGE = "U+200d, U+2640, U+2642, U+fe0f, U+1f3fb-1f3ff, U
 const DEJAVU_EMOJI_PRESENTATION_UNICODE_RANGE = "U+25fd-25fe, U+2614-2615, U+2648-2653, U+267f, U+2693, U+26a1, " +
     "U+26aa-26ab, U+1f0cf, U+1f311-1f318, U+1f42d-1f42e, U+1f431, U+1f435, U+1f600-1f64f";
 
-export const getEmojiFontStyle = (platform: "apple" | "windows11" | "other", servePath: string) => {
+export const getEmojiFontStyle = (platform: "apple" | "windows11" | "windows" | "other", servePath: string) => {
     let style;
     // Emojis Reset：覆盖正文和代码字体中的表情字形。
     // Emojis Additional：为系统表情字体补充指定字符和组合。
@@ -57,6 +57,29 @@ export const getEmojiFontStyle = (platform: "apple" | "windows11" | "other", ser
   src: local("Segoe UI Emoji"),
   local("Segoe UI Symbol");
   size-adjust: 85%;
+}
+/* Segoe UI Emoji 的上升和下降度量以相邻文字的可见字形为参照，合计 99% 以维持图标的行盒高度。 */
+@font-face {
+  font-family: "Emojis Icon";
+  src: local("Segoe UI Emoji"),
+  local("Segoe UI Symbol");
+  size-adjust: 85%;
+  ascent-override: 80%;
+  descent-override: 19%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Emojis File Tree Native";
+  src: local("Segoe UI Emoji"),
+  local("Segoe UI Symbol");
+  size-adjust: 85%;
+  ascent-override: 82%;
+  descent-override: 17%;
+  line-gap-override: 0%;
+}
+:root[data-theme-mode="light"][data-light-theme="daylight"],
+:root[data-theme-mode="dark"][data-dark-theme="midnight"] {
+  --b3-font-family-emoji-file-tree: "Emojis Additional", "Emojis File Tree Native", var(--b3-font-family-emoji);
 }`;
     } else {
         style = `@font-face {
@@ -83,6 +106,18 @@ export const getEmojiFontStyle = (platform: "apple" | "windows11" | "other", ser
   local("Android Emoji"),
   local("EmojiSymbols");
   size-adjust: 92%;
+}`;
+    }
+    if (platform === "windows") {
+        // Windows 的 Noto 文档树图标通过字体度量对齐文字，正文和其他图标继续使用原有度量。
+        // ascent/descent 的总和保持约 117%，仅改变基线，16px 字号时相当于上移约 1px。
+        style += `\n@font-face {
+  font-family: "Emojis File Tree";
+  src: url(${servePath}${NOTO_EMOJI_FONT_PATH}) format("woff2");
+  size-adjust: 92%;
+  ascent-override: 86%;
+  descent-override: 31%;
+  line-gap-override: 0%;
 }`;
     }
     return style;

@@ -1,9 +1,9 @@
 const path = require("path");
+const PreserveWatchAssetsPlugin = require("./scripts/preserve-watch-assets");
 const webpack = require("webpack");
 const pkg = require("./package.json");
 const MiniCssExtractPlugin = require("mini-css-extract-plugin");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
-const {CleanWebpackPlugin} = require("clean-webpack-plugin");
 // const BundleAnalyzerPlugin = require("webpack-bundle-analyzer").BundleAnalyzerPlugin;
 const {EsbuildPlugin} = require("esbuild-loader");
 
@@ -13,12 +13,15 @@ module.exports = (env, argv) => {
         watch: argv.mode !== "production",
         devtool: argv.mode !== "production" ? "eval-source-map" : false,
         output: {
+            // 首次输出时清理，开发期间的后续输出由插件保留旧资源。
+            clean: true,
             publicPath: "/stage/build/desktop/",
             filename: "[name].[chunkhash].js",
             path: path.resolve(__dirname, "stage/build/desktop"),
         },
         entry: {
-            "main": "./src/index.ts",
+            "startup": {import: "./src/boot/startup.ts", runtime: false},
+            "main": {import: "./src/index.ts", dependOn: "startup"},
         },
         optimization: {
             minimize: true,
@@ -111,12 +114,8 @@ module.exports = (env, argv) => {
             ],
         },
         plugins: [
+            new PreserveWatchAssetsPlugin(),
             // new BundleAnalyzerPlugin(),
-            new CleanWebpackPlugin({
-                cleanStaleWebpackAssets: false,
-                cleanOnceBeforeBuildPatterns: [
-                    path.join(__dirname, "stage/build/desktop")],
-            }),
             new webpack.DefinePlugin({
                 SIYUAN_VERSION: JSON.stringify(pkg.version),
                 NODE_ENV: JSON.stringify(argv.mode),
@@ -126,7 +125,8 @@ module.exports = (env, argv) => {
             }),
             new HtmlWebpackPlugin({
                 inject: "head",
-                chunks: ["main"],
+                chunks: ["startup", "main"],
+                chunksSortMode: "manual",
                 filename: "index.html",
                 template: "src/assets/template/desktop/index.tpl",
             }),

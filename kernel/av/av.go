@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package av 包含了属性视图（Attribute View）相关的实现。
 package av
@@ -24,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +38,8 @@ type AttributeView struct {
 	Views             []*View            `json:"views"`                       // 视图
 	NewItemTemplates  []*NewItemTemplate `json:"newItemTemplates,omitempty"`  // 新增条目模板
 	DefaultTemplateID string             `json:"defaultTemplateID,omitempty"` // 默认新增条目模板 ID
+	Automations       *AutomationConfig  `json:"automations,omitempty"`
+	SubItems          *SubItemsConfig    `json:"subItems,omitempty"`
 	// CustomColorRenderContext 保存只读渲染期间的关联数据库调色板上下文。
 	CustomColorRenderContext *CustomColorRenderContext `json:"-"`
 	// 卡片封面位置，条目 ID -> 封面来源 -> 位置
@@ -57,6 +48,19 @@ type AttributeView struct {
 	RenderedViewables map[string]Viewable `json:"-"` // 已经渲染好的视图
 
 	cardCoverPositionsChanged bool
+	sourceVersion             uint64
+	sourceGeneration          uint64
+	liveOrdinarySource        bool
+	storageContextID          string
+	storageContextBoxID       string
+}
+
+// RenderSourceVersion 只标识当前工作区普通数据库的已认证源版本，临时副本不参与跨请求复用。
+func (attrView *AttributeView) RenderSourceVersion() (version, generation uint64) {
+	if attrView != nil && attrView.liveOrdinarySource {
+		return attrView.sourceVersion, attrView.sourceGeneration
+	}
+	return 0, 0
 }
 
 // CustomColorRenderContext 为历史和仓库快照渲染解析关联数据库当时的调色板。
@@ -104,6 +108,10 @@ type NewItemTemplate struct {
 	SaveLocation        *NewItemSaveLocation          `json:"saveLocation,omitempty"`
 	ContentTemplatePath string                        `json:"contentTemplatePath,omitempty"`
 	HideInFileTree      bool                          `json:"hideInFileTree,omitempty"`
+	// nil 时仅日历条目自动打开；false 不自动打开，true 创建后由交互客户端打开。
+	OpenAfterCreate *bool `json:"openAfterCreate,omitempty"`
+	// 自动打开时使用当前分屏；false 或省略时向右分屏打开。
+	OpenInCurrentTab bool `json:"openInCurrentTab,omitempty"`
 }
 
 // NewItemTemplatesConfig 描述一次完整的新增条目模板配置修改。
@@ -165,6 +173,7 @@ const (
 	KeyTypeURL        KeyType = "url"        // URL
 	KeyTypeEmail      KeyType = "email"      // Email
 	KeyTypePhone      KeyType = "phone"      // 电话
+	KeyTypeLocation   KeyType = "location"   // 位置
 	KeyTypeMAsset     KeyType = "mAsset"     // 资源
 	KeyTypeTemplate   KeyType = "template"   // 模板
 	KeyTypeCreated    KeyType = "created"    // 创建时间
@@ -177,11 +186,12 @@ const (
 
 // Key 描述了属性视图属性字段的基础结构。
 type Key struct {
-	ID   string  `json:"id"`   // 字段 ID
-	Name string  `json:"name"` // 字段名
-	Type KeyType `json:"type"` // 字段类型
-	Icon string  `json:"icon"` // 字段图标
-	Desc string  `json:"desc"` // 字段描述
+	ID                       string  `json:"id"`                                 // 字段 ID
+	Name                     string  `json:"name"`                               // 字段名
+	Type                     KeyType `json:"type"`                               // 字段类型
+	Icon                     string  `json:"icon"`                               // 字段图标
+	Desc                     string  `json:"desc"`                               // 字段描述
+	AttributePanelVisibility string  `json:"attributePanelVisibility,omitempty"` // 属性面板可见性，空值沿用全局设置
 
 	// 以下是某些列类型的特有属性
 
@@ -261,10 +271,11 @@ type RollupCalc struct {
 }
 
 type Relation struct {
-	AvID             string        `json:"avID"`                       // 关联的属性视图 ID
-	IsTwoWay         bool          `json:"isTwoWay"`                   // 是否双向关联
-	BackKeyID        string        `json:"backKeyID"`                  // 双向关联时回链关联列的 ID
-	CandidateFilters []*ViewFilter `json:"candidateFilters,omitempty"` // 可关联目标条目的过滤规则
+	AvID             string              `json:"avID"`                       // 关联的属性视图 ID
+	IsTwoWay         bool                `json:"isTwoWay"`                   // 是否双向关联
+	BackKeyID        string              `json:"backKeyID"`                  // 双向关联时回链关联列的 ID
+	CandidateFilters []*ViewFilter       `json:"candidateFilters,omitempty"` // 可关联目标条目的过滤规则
+	DetailView       *RelationDetailView `json:"detailView,omitempty"`
 }
 
 type SelectOption struct {
@@ -303,6 +314,7 @@ var widthValuePattern = regexp.MustCompile(`^\d+(\.\d+)?(px|em|rem|%)$`)
 
 // View 描述了视图的结构。
 type View struct {
+	SubItemsDisplay   string                  `json:"subItemsDisplay,omitempty"`
 	ConditionalColors []*ConditionalColorRule `json:"conditionalColors"` // nil 兼容旧日历，空数组禁用颜色
 	ID                string                  `json:"id"`                // 视图 ID
 	Icon              string                  `json:"icon"`              // 视图图标
@@ -314,22 +326,26 @@ type View struct {
 	PageSize          int                     `json:"pageSize"`          // 每页条目数
 	LayoutType        LayoutType              `json:"type"`              // 当前布局类型
 	Table             *LayoutTable            `json:"table,omitempty"`   // 表格布局
+	LegacyMap         json.RawMessage         `json:"map,omitempty"`     // 仅保留旧地图配置，不参与渲染或修改
 	Calendar          *LayoutCalendar         `json:"calendar,omitempty"`
 	List              *LayoutList             `json:"list,omitempty"`    // 列表布局
 	Gallery           *LayoutGallery          `json:"gallery,omitempty"` // 卡片布局
 	Kanban            *LayoutKanban           `json:"kanban,omitempty"`  // 看板布局
 	ItemIDs           []string                `json:"itemIds,omitempty"` // 项目 ID 列表，用于维护所有项目
 
-	Group        *ViewGroup `json:"group,omitempty"`     // 分组规则
-	GroupCreated int64      `json:"groupCreated"`        // 分组生成时间戳
-	Groups       []*View    `json:"groups,omitempty"`    // 分组视图列表
-	GroupItemIDs []string   `json:"groupItemIds"`        // 分组项目 ID 列表，用于维护分组中的所有项目
-	GroupCalc    *GroupCalc `json:"groupCalc,omitempty"` // 分组计算规则
-	GroupKey     *Key       `json:"groupKey,omitempty"`  // 分组字段
-	GroupVal     *Value     `json:"groupVal,omitempty"`  // 分组值
-	GroupFolded  bool       `json:"groupFolded"`         // 分组是否折叠
-	GroupHidden  int        `json:"groupHidden"`         // 分组是否隐藏，0：显示，1：空白隐藏，2：手动隐藏
-	GroupSort    int        `json:"groupSort"`           // 分组排序值，用于手动排序
+	Group           *ViewGroup `json:"group,omitempty"`           // 分组规则
+	GroupCreated    int64      `json:"groupCreated"`              // 分组生成时间戳
+	Groups          []*View    `json:"groups,omitempty"`          // 分组视图列表
+	GroupItemIDs    []string   `json:"groupItemIds"`              // 分组项目 ID 列表，用于维护分组中的所有项目
+	SubItemsItemIDs []string   `json:"subItemsItemIds,omitempty"` // 树形分组的独立手工顺序，不决定平铺分组成员
+	GroupCalc       *GroupCalc `json:"groupCalc,omitempty"`       // 分组计算规则
+	GroupKey        *Key       `json:"groupKey,omitempty"`        // 分组字段
+	GroupVal        *Value     `json:"groupVal,omitempty"`        // 分组值
+	GroupFolded     bool       `json:"groupFolded"`               // 分组是否折叠
+	GroupHidden     int        `json:"groupHidden"`               // 分组是否隐藏，0：显示，1：空白隐藏，2：手动隐藏
+	GroupSort       int        `json:"groupSort"`                 // 分组排序值，用于手动排序
+
+	legacyMapFallback bool
 }
 
 // ViewData 用于序列化视图数据到前端。
@@ -565,11 +581,6 @@ func getAttributeViewNameByPathInBox(avJSONPath, boxID string) (ret string, err 
 	return
 }
 
-// GetAttributeViewNameByPath 从指定路径读取 AV 名称（不加密，普通 box 兼容入口）。
-func GetAttributeViewNameByPath(avJSONPath string) (ret string, err error) {
-	return getAttributeViewNameByPathInBox(avJSONPath, "")
-}
-
 // GetAttributeViewNameInBox 获取指定笔记本中的数据库名称。
 func GetAttributeViewNameInBox(avID, boxID string) (ret string, err error) {
 	avJSONPath, _ := FindAttributeViewPathInBox(avID, boxID)
@@ -610,14 +621,21 @@ func newAttributeViewSearchInfo(attrView *AttributeView) *AttributeViewSearchInf
 }
 
 func cacheAttributeViewData(attrView *AttributeView, boxID string, data []byte) {
+	rememberCollectionView(attrView, boxID)
 	version := cache.SetAVDataWithVersionInBox(attrView.ID, boxID, data)
 	cache.SetAVSearchDataInBox(attrView.ID, boxID, version, newAttributeViewSearchInfo(attrView))
 }
 
 func parseAttributeViewSearchInfo(data []byte) (ret *AttributeViewSearchInfo, err error) {
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	ret = &AttributeViewSearchInfo{}
 	if err = json.Unmarshal(data, ret); err != nil {
 		return
+	}
+	for _, view := range ret.Views {
+		if view != nil && view.LayoutType == "map" {
+			view.LayoutType = LayoutTypeTable
+		}
 	}
 	err = CheckSpec(&AttributeView{Spec: ret.Spec})
 	return
@@ -650,7 +668,7 @@ func loadAttributeViewSearchInfoInBox(avID, avJSONPath, avBoxID string) (ret *At
 	}
 	defer release()
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if cached, ok := cache.GetAVSearchDataInBox[*AttributeViewSearchInfo](avID, avBoxID); ok {
 			return cached, nil
 		}
@@ -678,7 +696,7 @@ func loadAttributeViewSearchInfoInBox(avID, avJSONPath, avBoxID string) (ret *At
 
 		if ret, err = parseAttributeViewSearchInfo(data); err != nil {
 			logging.LogErrorf("unmarshal attribute view search info [%s] failed: %s", avID, err)
-			return nil, err
+			return nil, fmt.Errorf("parse attribute view search info [%s] failed: %w", avJSONPath, err)
 		}
 		if cache.SetAVSearchDataInBox(avID, avBoxID, dataVersion, ret) {
 			return ret, nil
@@ -827,6 +845,12 @@ func ReadAttributeViewCustomColorUsageByPath(avJSONPath string) (avID string, in
 }
 
 func parseAttributeViewByPathInBoxWithOptions(avJSONPath, boxID string, resolveColors bool) (ret *AttributeView, err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("load attribute view [%s] failed: %w", avJSONPath, err)
+		}
+	}()
+	generation := cache.GetAVCacheGeneration()
 	if !filelock.IsExist(avJSONPath) {
 		err = ErrViewNotFound
 		return
@@ -847,6 +871,7 @@ func parseAttributeViewByPathInBoxWithOptions(avJSONPath, boxID string, resolveC
 		dataVersion = version
 	} else {
 		var readErr error
+		readVersion := cache.AVDataReadVersion()
 		data, readErr = filelock.ReadFile(avJSONPath)
 		if nil != readErr {
 			logging.LogErrorf("read attribute view [%s] failed: %s", avID, readErr)
@@ -864,11 +889,22 @@ func parseAttributeViewByPathInBoxWithOptions(avJSONPath, boxID string, resolveC
 			// 这会在加密笔记本的 AV 因路径迁移（同步、导入、历史布局）落到全局位置时发生。
 			return nil, nil
 		}
-		dataVersion = cache.SetAVDataWithVersionInBox(avID, boxID, data)
+		dataVersion = cache.SetAVDataFromReadInBox(avID, boxID, data, readVersion)
 	}
 
-	ret, err = ParseAttributeViewData(avID, data)
+	if normalized, ok := cache.GetAVNormalizedDataInBox(avID, boxID, dataVersion); ok {
+		ret, err = parseAttributeViewData(avID, normalized, false)
+	} else {
+		ret, err = ParseAttributeViewData(avID, data)
+		if err == nil {
+			if normalized, marshalErr := json.Marshal(ret); marshalErr == nil {
+				cache.SetAVNormalizedDataInBox(avID, boxID, dataVersion, data, normalized)
+			}
+		}
+	}
 	if nil == err {
+		ret.sourceVersion, ret.sourceGeneration = dataVersion, generation
+		ret.liveOrdinarySource = boxID == "" && filepath.Clean(avJSONPath) == filepath.Join(util.DataDir, "storage", "av", avID+".json")
 		if resolveColors {
 			ret.ResolveDirectColors()
 			cache.SetAVSearchDataInBox(avID, boxID, dataVersion, newAttributeViewSearchInfo(ret))
@@ -879,6 +915,22 @@ func parseAttributeViewByPathInBoxWithOptions(avJSONPath, boxID string, resolveC
 
 // ParseAttributeViewData 解析已经完成解密认证的数据库数据，复用现有格式兼容与规范化处理。
 func ParseAttributeViewData(avID string, data []byte) (ret *AttributeView, err error) {
+	return parseAttributeViewData(avID, data, true)
+}
+
+func parseAttributeViewData(avID string, data []byte, normalizeRichText bool) (ret *AttributeView, err error) {
+	return parseAttributeViewDataWithRecovery(avID, data, normalizeRichText, false)
+}
+
+// ParseAttributeViewRecoveryData 解析已认证的恢复前数据，仅容许列表或日历布局缺失。
+// 返回值只供历史恢复计算变化，不能用于正常渲染或直接保存。
+func ParseAttributeViewRecoveryData(avID string, data []byte) (*AttributeView, error) {
+	return parseAttributeViewDataWithRecovery(avID, data, true, true)
+}
+
+func parseAttributeViewDataWithRecovery(avID string, data []byte, normalizeRichText, recovery bool) (ret *AttributeView, err error) {
+	// 仅处理已认证明文的开头 BOM；缓存和条件写入保留原始字节以检测外部修改。
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	ret = &AttributeView{RenderedViewables: map[string]Viewable{}}
 	if err = json.Unmarshal(data, ret); err != nil {
 		if strings.Contains(err.Error(), ".relation.contents of type av.Value") {
@@ -936,14 +988,26 @@ func ParseAttributeViewData(avID string, data []byte) (ret *AttributeView, err e
 			return
 		}
 	}
+	if err == nil && recovery {
+		err = ret.validateRecoveryStructure(avID)
+	}
 	if nil == err {
 		err = CheckSpec(ret)
 	}
-	if nil == err {
-		err = ret.ValidateListLayouts()
+	if err == nil {
+		err = ret.Automations.ValidateSpec()
 	}
 	if nil == err {
+		err = ret.validateLayouts(recovery)
+	}
+	if nil == err && normalizeRichText {
 		err = ret.NormalizeRichText()
+	}
+	if nil == err {
+		err = ret.NormalizeLocations()
+	}
+	if nil == err {
+		err = ret.ValidateSubItems()
 	}
 	return
 }
@@ -961,6 +1025,9 @@ func SaveAttributeViewIfUnchanged(av *AttributeView, original []byte) error {
 }
 
 func saveAttributeView(av *AttributeView, original []byte) (err error) {
+	if av.Spec > CurrentSpec {
+		return ErrSpecTooNew
+	}
 	if !ast.IsNodeIDPattern(av.ID) {
 		err = ErrInvalidAttributeViewID
 		logging.LogErrorf("save attribute view failed: %s", err)
@@ -972,16 +1039,24 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 		}
 	}()
 
-	if err = av.ValidateListLayouts(); nil != err {
+	if err = av.NormalizeLocations(); nil != err {
 		return
 	}
-	if err = av.NormalizeRichText(); nil != err {
+	if err = av.ValidateLayouts(); nil != err {
+		return
+	}
+	var richTextSpec int
+	if err = av.normalizeRichText(&richTextSpec); nil != err {
 		logging.LogErrorf("normalize attribute view [%s] rich text failed: %s", av.ID, err)
 		return
 	}
 
 	// 做一些数据兼容和订正处理
+	if err = av.ValidateSubItems(); err != nil {
+		return
+	}
 	UpgradeSpec(av)
+	av.Spec = max(av.Spec, richTextSpec)
 
 	// 值去重
 	blockValues := av.GetBlockKeyValues()
@@ -1017,8 +1092,8 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 
 	// 清理渲染回填值
 	for _, kv := range av.KeyValues {
-		for i := len(kv.Values) - 1; i >= 0; i-- {
-			if kv.Values[i].IsRenderAutoFill {
+		for i, v := range slices.Backward(kv.Values) {
+			if v.IsRenderAutoFill {
 				kv.Values = append(kv.Values[:i], kv.Values[i+1:]...)
 			}
 		}
@@ -1026,26 +1101,85 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 
 	var data []byte
 	restoreRenderedContents := av.suspendRenderedContents()
+	restorePrimaryRichDOM := av.suspendPrimaryRichDOM()
 	restoreResolvedColors := av.suspendResolvedColors()
-	if util.UseSingleLineSave {
+	if util.UseSingleLineSave.Load() {
 		data, err = gulu.JSON.MarshalJSON(av)
 	} else {
 		data, err = gulu.JSON.MarshalIndentJSON(av, "", "\t")
 	}
 	restoreResolvedColors()
 	restoreRenderedContents()
+	restorePrimaryRichDOM()
 	if err != nil {
 		logging.LogErrorf("marshal attribute view [%s] failed: %s", av.ID, err)
 		return
 	}
 
 	// 缓存与待写入数据一致时跳过落盘；缓存未命中时再读盘比对，避免无变更的重复写入
-	// 通过 fallback 查找 AV 定义的实际路径（普通 box 全局，加密笔记本笔记本级）
-	avJSONPath, avBoxID := FindAttributeViewPath(av.ID)
+	// 显式边界优先；未固定边界的调用继续按当前工作区映射查找。
+	avJSONPath, avBoxID := av.StoragePath()
+	releaseBox, lockErr := holdAVBoxReadLock(avBoxID)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer releaseBox()
 	if avJSONPath == "" {
 		// 文件不存在（首次创建），使用全局路径，boxID 为空（普通 box）
 		// 加密笔记本的首次创建由 handler 层通过 SetAVBoxID 预设路径
 		avJSONPath = GetAttributeViewDataPath(av.ID)
+	}
+	if value, recorded := sourceWriteRecorders.Load(avBoxID + "/" + av.ID); recorded && value.(*sourceWriteRecord).active() {
+		before, readErr := filelock.ReadFile(avJSONPath)
+		if os.IsNotExist(readErr) {
+			before, readErr = nil, nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if original != nil {
+			if avBoxID != "" {
+				return errors.New("conditional replacement of encrypted attribute views is not supported")
+			}
+			if !bytes.Equal(before, original) {
+				return util.ErrFileChanged
+			}
+		}
+		if before != nil {
+			plain := before
+			if avBoxID != "" {
+				plain, readErr = decryptAVDataLocked(avBoxID, av.ID, before)
+			}
+			if readErr != nil {
+				return readErr
+			}
+			if value.(*sourceWriteRecord).recovery {
+				_, readErr = ParseAttributeViewRecoveryData(av.ID, plain)
+			} else {
+				_, readErr = ParseAttributeViewData(av.ID, plain)
+			}
+			if readErr != nil {
+				return readErr
+			}
+		}
+		writeData := data
+		if avBoxID != "" {
+			if writeData, err = encryptAVDataLocked(avBoxID, av.ID, data); err != nil {
+				return err
+			}
+		}
+		if err = value.(*sourceWriteRecord).record(avBoxID, before, writeData); err != nil {
+			return err
+		}
+		if err = os.MkdirAll(filepath.Dir(avJSONPath), 0755); err != nil {
+			return err
+		}
+		if err = util.WriteFileIfUnchanged(avJSONPath, before, writeData); err != nil {
+			return err
+		}
+		cacheAttributeViewData(av, avBoxID, data)
+		NotifyAttributeViewSaved(av.ID, avBoxID)
+		return nil
 	}
 	if original != nil {
 		if avBoxID != "" {
@@ -1055,9 +1189,7 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 			return err
 		}
 		cacheAttributeViewData(av, avBoxID, data)
-		if RichTextSpec <= av.Spec {
-			NotifyAttributeViewSaved(av.ID, avBoxID)
-		}
+		NotifyAttributeViewSaved(av.ID, avBoxID)
 		return nil
 	}
 	if cachedData, version, ok := cache.GetAVDataWithVersionInBox(av.ID, avBoxID); ok {
@@ -1069,7 +1201,7 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 		if diskData, readErr := filelock.ReadFile(avJSONPath); nil == readErr {
 			// 加密笔记本的磁盘数据是密文，需先解密再比对
 			if avBoxID != "" {
-				diskData, _ = decryptAVData(avBoxID, av.ID, diskData)
+				diskData, _ = decryptAVDataLocked(avBoxID, av.ID, diskData)
 			}
 			if len(diskData) == len(data) && bytes.Equal(diskData, data) {
 				cacheAttributeViewData(av, avBoxID, data)
@@ -1081,7 +1213,7 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 	// 加密笔记本的数据需加密后再写盘
 	writeData := data
 	if avBoxID != "" {
-		writeData, err = encryptAVData(avBoxID, av.ID, data)
+		writeData, err = encryptAVDataLocked(avBoxID, av.ID, data)
 		if err != nil {
 			logging.LogErrorf("encrypt attribute view [%s] failed: %s", av.ID, err)
 			return
@@ -1092,7 +1224,13 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 		logging.LogErrorf("create attribute view dir [%s] failed: %s", filepath.Dir(avJSONPath), err)
 		return
 	}
-	if err = util.WriteFileByMmap(avJSONPath, writeData); nil != err {
+	if avBoxID != "" {
+		// 密文通过临时文件原子替换，避免原址覆写中断后丢失可认证的旧数据。
+		if err = filelock.WriteFile(avJSONPath, writeData); nil != err {
+			logging.LogErrorf("save attribute view [%s] failed: %s", av.ID, err)
+			return
+		}
+	} else if err = util.WriteFileByMmap(avJSONPath, writeData); nil != err {
 		if err = filelock.WriteFile(avJSONPath, writeData); nil != err {
 			logging.LogErrorf("save attribute view [%s] failed: %s", av.ID, err)
 			return
@@ -1100,12 +1238,10 @@ func saveAttributeView(av *AttributeView, original []byte) (err error) {
 	}
 
 	cacheAttributeViewData(av, avBoxID, data)
-	if RichTextSpec <= av.Spec {
-		NotifyAttributeViewSaved(av.ID, avBoxID)
-	}
+	NotifyAttributeViewSaved(av.ID, avBoxID)
 
 	if util.ExceedLargeFileWarningSize(len(data)) {
-		msg := fmt.Sprintf(util.Langs[util.Lang][268], av.Name+" "+filepath.Base(avJSONPath), util.LargeFileWarningSize)
+		msg := fmt.Sprintf(util.Langs[util.Lang][268], av.Name+" "+filepath.Base(avJSONPath), util.LargeFileWarningSize.Load())
 		util.PushErrMsg(msg, 7000)
 	}
 	return
@@ -1285,7 +1421,9 @@ func (av *AttributeView) Clone() (ret *AttributeView) {
 	var oldKeyIDs []string
 	keyIDMap := map[string]string{}
 	keyTypeMap := map[string]KeyType{}
+	subItemsDetailViews := map[string]*RelationDetailView{}
 	for _, kv := range ret.KeyValues {
+		oldKeyID := kv.Key.ID
 		newID := ast.NewNodeID()
 		keyIDMap[kv.Key.ID] = newID
 		keyTypeMap[kv.Key.ID] = kv.Key.Type
@@ -1293,11 +1431,15 @@ func (av *AttributeView) Clone() (ret *AttributeView) {
 		kv.Key.ID = newID
 		kv.Values = []*Value{}
 
-		if KeyTypeRelation == kv.Key.Type {
+		if KeyTypeRelation == kv.Key.Type && nil != kv.Key.Relation {
+			if ret.SubItems != nil && (ret.SubItems.ParentKeyID == oldKeyID || ret.SubItems.ChildrenKeyID == oldKeyID) {
+				subItemsDetailViews[newID] = kv.Key.Relation.DetailView
+			}
 			// 断开关联
 			kv.Key.Relation.IsTwoWay = false
 			kv.Key.Relation.AvID = ""
 			kv.Key.Relation.BackKeyID = ""
+			kv.Key.Relation.DetailView = nil
 		}
 	}
 
@@ -1320,6 +1462,19 @@ func (av *AttributeView) Clone() (ret *AttributeView) {
 		}
 	}
 
+	ret.remapAutomationKeys(av.ID, keyIDMap)
+	if ret.SubItems != nil {
+		ret.SubItems.ParentKeyID = keyIDMap[ret.SubItems.ParentKeyID]
+		ret.SubItems.ChildrenKeyID = keyIDMap[ret.SubItems.ChildrenKeyID]
+		if parent, e := ret.GetKey(ret.SubItems.ParentKeyID); e == nil {
+			parent.Relation = &Relation{AvID: ret.ID, IsTwoWay: true, BackKeyID: ret.SubItems.ChildrenKeyID,
+				DetailView: subItemsDetailViews[parent.ID]}
+		}
+		if children, e := ret.GetKey(ret.SubItems.ChildrenKeyID); e == nil {
+			children.Relation = &Relation{AvID: ret.ID, IsTwoWay: true, BackKeyID: ret.SubItems.ParentKeyID,
+				DetailView: subItemsDetailViews[children.ID]}
+		}
+	}
 	oldKeyIDs = gulu.Str.RemoveDuplicatedElem(oldKeyIDs)
 	sorts := map[string]int{}
 	for i, k := range ret.KeyIDs {
@@ -1329,8 +1484,11 @@ func (av *AttributeView) Clone() (ret *AttributeView) {
 		return sorts[oldKeyIDs[i]] < sorts[oldKeyIDs[j]]
 	})
 
+	viewIDMap := map[string]string{}
 	for _, view := range ret.Views {
+		oldViewID := view.ID
 		view.ID = ast.NewNodeID()
+		viewIDMap[oldViewID] = view.ID
 
 		remapFilterColumns(view.Filters, keyIDMap)
 		for _, rule := range view.ConditionalColors {
@@ -1377,6 +1535,28 @@ func (av *AttributeView) Clone() (ret *AttributeView) {
 			}
 		}
 		view.ItemIDs = []string{}
+		pending := []*View{view}
+		for len(pending) > 0 {
+			current := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			current.SubItemsItemIDs = nil
+			if groupKey := current.GroupKey; groupKey != nil && groupKey.Relation != nil && groupKey.Relation.DetailView != nil {
+				// 分组字段沿用副本的关联定义，避免保存已断开的目标或原视图身份。
+				if copiedKey, err := ret.GetKey(keyIDMap[groupKey.ID]); err == nil {
+					current.GroupKey = copiedKey
+				} else {
+					groupKey.Relation.DetailView = nil
+				}
+			}
+			pending = append(pending, current.Groups...)
+		}
+	}
+	for _, detailView := range subItemsDetailViews {
+		if detailView != nil && detailView.Spec == RelationDetailViewSpec {
+			if id := viewIDMap[detailView.ViewID]; id != "" {
+				detailView.ViewID = id
+			}
+		}
 	}
 	ret.CardCoverPositions = nil
 
@@ -1419,6 +1599,7 @@ var (
 	ErrInvalidColumnAlign     = errors.New("invalid column align")
 	ErrSpecTooNew             = errors.New("attribute view spec is too new")
 	ErrRichTextSpecMismatch   = errors.New("attribute view rich text requires storage spec 9")
+	ErrLocationSpecMismatch   = errors.New("attribute view location requires storage spec 13")
 	ErrFilterTooDeep          = errors.New("filter nesting depth exceeds the maximum allowed")
 )
 

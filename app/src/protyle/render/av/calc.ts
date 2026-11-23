@@ -1,3 +1,5 @@
+import {AdaptiveDialog} from "../../../dialog/adaptiveDialog";
+import {isAVDateType} from "./capabilities";
 import {isAVRenderData} from "./renderData";
 import {Menu} from "../../../plugin/Menu";
 import {transaction} from "../../wysiwyg/transaction";
@@ -5,7 +7,6 @@ import {hasClosestBlock, hasClosestByClassName} from "../../util/hasClosest";
 import {fetchSyncPost} from "../../../util/fetch";
 import {getFieldsByData} from "./view";
 import {Constants} from "../../../constants";
-import {Dialog} from "../../../dialog";
 import {escapeAttr, escapeHtml} from "../../../util/escape";
 import {getAVTemplateHTML} from "./attributeValue";
 
@@ -345,7 +346,7 @@ export const openCalcMenu = async (protyle: IProtyle, calcElement: HTMLElement, 
             }
         }
     }
-    if (["number", "template"].includes(type) || rollupIsNumber) {
+    if ((type === "number" || type === "template") || rollupIsNumber) {
         calcItem({
             menu,
             protyle,
@@ -412,7 +413,7 @@ export const openCalcMenu = async (protyle: IProtyle, calcElement: HTMLElement, 
             blockID,
             target: calcElement
         });
-    } else if (["date", "created", "updated"].includes(type)) {
+    } else if (isAVDateType(type)) {
         calcItem({
             menu,
             protyle,
@@ -469,7 +470,7 @@ export const openCalcMenu = async (protyle: IProtyle, calcElement: HTMLElement, 
         if (oldOperator === "Template" && currentTemplate) {
             undoData.template = currentTemplate;
         }
-        transaction(protyle, [{
+        return transaction(protyle, [{
             action: "setAttrViewColCalc",
             avID: avId,
             id: colId,
@@ -481,14 +482,14 @@ export const openCalcMenu = async (protyle: IProtyle, calcElement: HTMLElement, 
             id: colId,
             data: undoData,
             blockID
-        }]);
+        }], {awaitResponse: true});
     };
     menu.addItem({
         iconHTML: "",
         label: getNameByOperator("Template", !!panelData?.data),
         click() {
             menu.close();
-            const dialog = new Dialog({
+            const dialog = new AdaptiveDialog({
                 title: window.siyuan.languages.calcOperatorTemplate,
                 content: `<div class="b3-dialog__content">
     <textarea spellcheck="false" class="fn__block b3-text-field" placeholder="${escapeAttr(window.siyuan.languages.rollupTemplateTip)}" rows="8" style="resize: vertical;font-family: var(--b3-font-family-code);">${escapeHtml(currentTemplate)}</textarea>
@@ -503,15 +504,17 @@ export const openCalcMenu = async (protyle: IProtyle, calcElement: HTMLElement, 
             const confirmBtn = dialog.element.querySelector(".b3-button--text") as HTMLButtonElement;
             const cancelBtn = dialog.element.querySelector(".b3-button--cancel") as HTMLButtonElement;
             const confirm = () => {
-                submitTemplate(textarea.value);
-                dialog.destroy();
+                void dialog.runPending(async () => {
+                    await submitTemplate(textarea.value);
+                    return true;
+                });
             };
             confirmBtn.addEventListener("click", confirm);
             cancelBtn.addEventListener("click", () => {
                 dialog.destroy();
             });
             dialog.bindInput(textarea, confirm);
-            textarea.focus();
+            dialog.focusWhenReady(() => textarea);
         }
     });
     const calcRect = calcElement.getBoundingClientRect();
@@ -524,7 +527,7 @@ export const getCalcValue = (column: IAVColumn) => {
     }
     let resultCalc: any = column.calc.result.number;
     if (column.calc.operator === "Earliest" || column.calc.operator === "Latest" ||
-        (column.calc.operator === "Range" && ["date", "created", "updated"].includes(column.type))) {
+        (column.calc.operator === "Range" && isAVDateType(column.type))) {
         resultCalc = column.calc.result[column.type as "date"];
     } else if (column.calc.operator === "Template") {
         // 自定义模板统计：数字输出走 number，文本输出走 text

@@ -1,23 +1,10 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package api
 
 import (
-	"github.com/88250/gulu"
 	"github.com/gin-gonic/gin"
 	"github.com/siyuan-note/siyuan/kernel/apicontract"
 	"github.com/siyuan-note/siyuan/kernel/model"
@@ -35,29 +22,36 @@ var getBookmarkLabels = contractHandler(apicontract.GetBookmarkLabels, func(c *g
 
 var batchGetBlockAttrs = contractHandler(apicontract.BatchGetBlockAttrs, func(c *gin.Context, request apicontract.BlockIDsRequest) apicontract.Response[map[string]map[string]string] {
 	ids := filterBlockIDsByPublishAccess(c, request.IDs, "")
-	return apicontract.Success(sql.BatchGetBlockAttrs(ids))
+	attrs := sql.BatchGetBlockAttrs(ids)
+	if model.IsReadOnlyRoleContext(c) {
+		publishAccess := model.GetPublishAccess()
+		for id, ial := range attrs {
+			attrs[id] = model.FilterBlockAttrsByPublishAccess(c, publishAccess, ial)
+		}
+	}
+	return apicontract.Success(attrs)
 })
 
 var getBlockAttrs = contractHandler(apicontract.GetBlockAttrs, func(c *gin.Context, request apicontract.BlockIDRequest) apicontract.Response[map[string]string] {
-	ret := gulu.Ret.NewResult()
-
 	id := request.ID
-	if util.InvalidIDPattern(id, ret) {
-		return contractFailure[map[string]string](ret)
+	if err := util.ValidateID(id); err != nil {
+		return apicontract.FailureFrom[map[string]string](err)
 	}
-	if !checkBlockPublishAccess(c, id, ret) {
-		return contractFailure[map[string]string](ret)
+	if err := checkBlockPublishAccess(c, id); err != nil {
+		return apicontract.FailureFrom[map[string]string](err)
 	}
 
-	return apicontract.Success(sql.GetBlockAttrs(id))
+	attrs := sql.GetBlockAttrs(id)
+	if model.IsReadOnlyRoleContext(c) {
+		attrs = model.FilterBlockAttrsByPublishAccess(c, model.GetPublishAccess(), attrs)
+	}
+	return apicontract.Success(attrs)
 })
 
 var setBlockAttrs = contractHandler(apicontract.SetBlockAttrs, func(c *gin.Context, request apicontract.SetBlockAttrsRequest) apicontract.Response[apicontract.Null] {
-	ret := gulu.Ret.NewResult()
-
 	id := request.ID
-	if util.InvalidIDPattern(id, ret) {
-		return contractFailure[apicontract.Null](ret)
+	if err := util.ValidateID(id); err != nil {
+		return apicontract.FailureFrom[apicontract.Null](err)
 	}
 
 	attrs := request.Attrs
@@ -80,19 +74,16 @@ var setBlockAttrs = contractHandler(apicontract.SetBlockAttrs, func(c *gin.Conte
 	}
 	err := model.SetBlockAttrs(id, nameValues)
 	if err != nil {
-		ret.Code = -1
-		ret.Msg = err.Error()
-		return contractFailure[apicontract.Null](ret)
+		return apicontract.Failure[apicontract.Null](-1, err.Error())
 	}
 	return apicontract.Success(apicontract.Null{})
 })
 
 var batchSetBlockAttrs = contractHandler(apicontract.BatchSetBlockAttrs, func(c *gin.Context, request apicontract.BatchSetBlockAttrsRequest) apicontract.Response[apicontract.Null] {
-	ret := gulu.Ret.NewResult()
 	var blockAttrs []map[string]any
 	for _, block := range request.BlockAttrs {
-		if util.InvalidIDPattern(block.ID, ret) {
-			return contractFailure[apicontract.Null](ret)
+		if err := util.ValidateID(block.ID); err != nil {
+			return apicontract.FailureFrom[apicontract.Null](err)
 		}
 		attrs := map[string]string{}
 		for name, value := range block.Attrs {

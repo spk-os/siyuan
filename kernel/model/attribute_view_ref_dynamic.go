@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
@@ -29,10 +17,10 @@ type attributeViewRefSource struct {
 	boxID string
 }
 
-func refreshAttributeViewDynamicRefTexts(updatedDefNodes map[string]*ast.Node, refs []*sql.Ref) {
+func refreshAttributeViewDynamicRefTexts(updatedDefNodes map[string]*ast.Node, refs []*sql.Ref, resolved ...*dynamicRefAnchorResolver) {
 	for _, source := range attributeViewRefSources(refs) {
 		attrView, err := av.ParseAttributeViewInBox(source.avID, source.boxID)
-		if nil != err || nil == attrView || !updateAttributeViewDynamicRefTexts(attrView, updatedDefNodes) {
+		if nil != err || nil == attrView || !updateAttributeViewDynamicRefTexts(attrView, updatedDefNodes, resolved...) {
 			continue
 		}
 		if err = av.SaveAttributeView(attrView); nil != err {
@@ -72,32 +60,31 @@ func attributeViewRefSources(refs []*sql.Ref) (ret []attributeViewRefSource) {
 	return
 }
 
-func updateAttributeViewDynamicRefTexts(attrView *av.AttributeView, updatedDefNodes map[string]*ast.Node) (changed bool) {
+func updateAttributeViewDynamicRefTexts(attrView *av.AttributeView, updatedDefNodes map[string]*ast.Node, resolved ...*dynamicRefAnchorResolver) (changed bool) {
 	if nil == attrView || 0 == len(updatedDefNodes) {
 		return
 	}
 	for _, keyValues := range attrView.KeyValues {
-		if nil == keyValues || nil == keyValues.Key || av.KeyTypeText != keyValues.Key.Type {
+		if nil == keyValues || nil == keyValues.Key || (av.KeyTypeText != keyValues.Key.Type && av.KeyTypeBlock != keyValues.Key.Type) {
 			continue
 		}
 		for _, value := range keyValues.Values {
-			if nil == value || nil == value.Text || !value.Text.IsRich() {
+			if nil == value {
 				continue
 			}
-			fragmentTree, err := av.ParseValueTextRich(value.Text.Rich)
+			fragmentTree, err := av.RichValueTree(value)
 			if nil != err || nil == fragmentTree {
 				continue
 			}
-			valueChanged, _ := updateRefText(fragmentTree.Root, updatedDefNodes)
+			valueChanged, _ := updateRefText(fragmentTree.Root, updatedDefNodes, resolved...)
 			if !valueChanged {
 				continue
 			}
-			richContent, renderErr := av.RenderValueTextRich(fragmentTree)
+			renderErr := av.SetRichValueTree(value, fragmentTree)
 			if nil != renderErr {
 				logging.LogWarnf("render attribute view [%s] dynamic reference text failed: %s", attrView.ID, renderErr)
 				continue
 			}
-			value.Text.Rich.Content = richContent
 			changed = true
 		}
 	}

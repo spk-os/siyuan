@@ -1,4 +1,6 @@
+import {getAVCellShowIcon} from "./entryIcon";
 import {isTableLikeView} from "./viewType";
+import {hasAVCapability} from "./capabilities";
 import {createEmptyAVValue} from "./attributeValue";
 import {popTextCell, renderCell, renderCellAttr, updateCellsValue} from "./cell";
 import {getAVData, getAVSelectedItemIDs} from "./virtualScroll";
@@ -6,28 +8,14 @@ import {getFieldsByData} from "./view";
 import {TAVBatchEditMode} from "./batchValue";
 import {cloneAVCellValueSnapshot} from "./cellValue";
 import {renderAVRichTextElements} from "./richText";
-
-const EDITABLE_FIELD_TYPES: TAVCol[] = [
-    "block",
-    "text",
-    "number",
-    "select",
-    "mSelect",
-    "date",
-    "checkbox",
-    "url",
-    "email",
-    "phone",
-    "mAsset",
-    "relation",
-];
+import {openAVBindBlock} from "./bindBlock";
 
 export const getEditableAVFields = (blockElement: HTMLElement) => {
     const data = getAVData(blockElement);
     if (!data) {
         return [];
     }
-    return getFieldsByData(data).filter((field) => EDITABLE_FIELD_TYPES.includes(field.type));
+    return getFieldsByData(data).filter((field) => hasAVCapability(field.type, "editable"));
 };
 
 const findItemCell = (view: IAVView, viewType: TAVView, itemID: string, fieldIndex: number): IAVCell | undefined => {
@@ -134,7 +122,7 @@ const createEditProxy = (options: {
     }
     cellElement.dataset.dateFormat = options.field.dateFormat || "";
     cellElement.style.cssText = "position:absolute;inset:0;";
-    cellElement.innerHTML = renderCell(displayValue, 0, options.data.view.showIcon, "table", options.field.options,
+    cellElement.innerHTML = renderCell(displayValue, 0, getAVCellShowIcon(options.data.view, displayValue.type), "table", options.field.options,
         options.field.dateFormat);
     if (displayValue.type === "checkbox") {
         renderCellAttr(cellElement, displayValue);
@@ -244,4 +232,33 @@ export const openAVFieldEditor = (options: {
         positionByMenu: true,
         requireExplicitChange: true,
     });
+};
+
+export const openAVFieldBinding = (options: {
+    protyle: IProtyle;
+    blockElement: HTMLElement;
+    field: IAVColumn;
+    anchorElement: HTMLElement;
+}) => {
+    const context = createBatchEditContext(options);
+    if (!context) {
+        return;
+    }
+    const field = context.cellElements[0];
+    const value = JSON.parse(decodeURIComponent(field.dataset.cellValue)) as IAVCellValue;
+    if (!openAVBindBlock(options.protyle, field, value.block?.content?.trim() || "")) {
+        context.destroy();
+        return;
+    }
+    // 候选关闭后仍可能继续选址新建，保留代理直到条目重绘或绑定目标改变。
+    const hint = options.protyle.hint.element;
+    const observer = new MutationObserver(() => {
+        if (!field.isConnected ||
+            options.protyle.toolbar.range?.startContainer !== field) {
+            observer.disconnect();
+            context.destroy();
+        }
+    });
+    observer.observe(hint, {attributes: true, attributeFilter: ["class"]});
+    observer.observe(options.blockElement, {childList: true});
 };

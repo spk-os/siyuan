@@ -1,3 +1,5 @@
+import {createDockKeymapDefaults} from "./util/dockKeymap";
+
 declare const SIYUAN_VERSION: string;
 declare const NODE_ENV: string;
 
@@ -13,6 +15,8 @@ const getFunctionKey = () => {
 };
 
 export abstract class Constants {
+    public static readonly TABLE_CORNERS = "data-table-corners";
+    public static readonly TABLE_CELL_CORNER = "data-table-cell-corner";
     public static readonly SIYUAN_VERSION: string = _SIYUAN_VERSION;
     public static readonly NODE_ENV: string = _NODE_ENV;
     public static readonly SIYUAN_APPID: string = Math.random().toString(36).substring(8);
@@ -37,6 +41,7 @@ export abstract class Constants {
     public static readonly SIYUAN_CMD: string = "siyuan-cmd";
     public static readonly SIYUAN_GET: string = "siyuan-get";
     public static readonly SIYUAN_EVENT: string = "siyuan-event";
+    public static readonly SIYUAN_AGENT_NOTIFICATION = "siyuan-agent-notification";
     public static readonly SIYUAN_WINDOW_WORKSPACE_SAVED = "siyuan-window-workspace-saved";
 
     public static readonly SIYUAN_WINDOW_WORKSPACE_SET = "siyuan-window-workspace-set";
@@ -49,6 +54,7 @@ export abstract class Constants {
     public static readonly SIYUAN_INSTALL_UPDATE: string = "siyuan-install-update";
     public static readonly SIYUAN_HOTKEY: string = "siyuan-hotkey";
     public static readonly SIYUAN_SYNC_APP_MENU: string = "siyuan-sync-app-menu";
+    public static readonly SIYUAN_SYNC_MARKDOWN_KEYMAP: string = "siyuan-sync-markdown-keymap";
     public static readonly SIYUAN_INIT: string = "siyuan-init";
     public static readonly SIYUAN_READY_TO_SHOW: string = "siyuan-ready-to-show";
     public static readonly SIYUAN_SEND_WINDOWS: string = "siyuan-send-windows"; // 主窗口和各新窗口之间的通信
@@ -82,20 +88,31 @@ export abstract class Constants {
     public static readonly CUSTOM_REMINDER_WECHAT: string = "custom-reminder-wechat";
     public static readonly CUSTOM_RIFF_DECKS: string = "custom-riff-decks";
     public static readonly CUSTOM_SY_READONLY: string = "custom-sy-readonly";
+    public static readonly CUSTOM_SY_EMBED_BREADCRUMB_PARENT_PATH: string = "custom-sy-embed-breadcrumb-parent-path";
+    public static readonly CUSTOM_SY_SUBDOC_SORT_MODE: string = "custom-sy-subdoc-sort-mode";
     public static readonly CUSTOM_SY_FULLWIDTH: string = "custom-sy-fullwidth";
     public static readonly CUSTOM_SY_HEADING_NUMBER: string = "custom-sy-heading-number";
+    public static readonly CUSTOM_SY_RESTORE_DOC_POSITION: string = "custom-sy-restore-doc-position";
     public static readonly CUSTOM_SY_AV_VIEW: string = "custom-sy-av-view";
     public static readonly CUSTOM_SY_AV_VISIBLE_VIEWS: string = "custom-sy-av-visible-views";
     public static readonly CUSTOM_SY_LIST_MINDMAP: string = "custom-sy-list-mindmap";
     public static readonly CUSTOM_SY_LIST_MINDMAP_DATA: string = "custom-sy-list-mindmap-data";
     public static readonly CUSTOM_SY_TITLE_EMPTY: string = "custom-sy-title-empty";
     public static readonly CUSTOM_SY_CODE_TAB_SPACES: string = "custom-sy-code-tab-spaces";
+    public static readonly CUSTOM_SY_TABLE_RICH: string = "custom-sy-table-rich";
+    public static readonly CUSTOM_SY_TABLE_HEADER_ROW: string = "custom-sy-table-header-row";
+    public static readonly CUSTOM_SY_TABLE_HEADER_COLUMN: string = "custom-sy-table-header-column";
+    public static readonly CUSTOM_SY_AV_STATIC_TEXT: string = "custom-sy-av-s-text-";
+    public static readonly CUSTOM_SY_LIVE_PHOTO: string = "custom-sy-live-photo";
+    public static readonly CUSTOM_SY_LIVE_PHOTO_VIDEO: string = "custom-sy-live-photo-video";
 
     // 临时标记 DOM 属性以辅助完成其功能
     public static readonly ATTRIBUTE_EDITING = "data-editing";
     public static readonly ATTRIBUTE_V_SCROLL = "data-v-scroll";
     public static readonly ATTRIBUTE_DOCK_WIDTH = "data-dock-width";
     public static readonly ATTRIBUTE_MENU_KEYMAP = "data-menu-keymap";
+    // 界面密度标记仅用于根元素，不写入笔记内容。
+    public static readonly ATTRIBUTE_UI_DENSITY = "data-ui-density";
 
     // size
     public static readonly SIZE_DATABASE_MAZ_SIZE: number = 102400;
@@ -183,15 +200,19 @@ export abstract class Constants {
     public static readonly LOCAL_MOBILE_TABS = "local-mobile-tabs"; // only mobile
     public static readonly LOCAL_MOBILE_BOTTOM_BAR = "local-mobile-bottom-bar"; // only mobile
     public static readonly LOCAL_MOBILE_SIDE_PANEL = "local-mobile-side-panel"; // only mobile
+    public static readonly LOCAL_MOBILE_MENU_COLLAPSED = "local-mobile-menu-collapsed";
     public static readonly LOCAL_DAILYNOTEID = "local-dailynoteid"; // string
     public static readonly LOCAL_HISTORY = "local-history";
     public static readonly LOCAL_CODELANG = "local-codelang"; // string
+    public static readonly LOCAL_SLASH_FREQUENT_ENABLED = "local-slash-frequent-enabled";
+    public static readonly LOCAL_SLASH_USAGE = "local-slash-usage";
     public static readonly LOCAL_FONTSTYLES = "local-fontstyles";
     public static readonly LOCAL_EXPORTPDF = "local-exportpdf";
     public static readonly LOCAL_EXPORTWORD = "local-exportword";
     public static readonly LOCAL_EXPORTIMG = "local-exportimg";
     public static readonly LOCAL_EXPORTPATH = "local-exportpath";
     public static readonly LOCAL_BAZAAR = "local-bazaar";
+    /** @deprecated 内置偏好改用 config.appearance.pdfTheme，不再读取此旧键 */
     public static readonly LOCAL_PDFTHEME = "local-pdftheme";
     public static readonly LOCAL_LAYOUTS = "local-layouts";
     public static readonly LOCAL_WINDOW_WORKSPACE = "local-window-workspace-";
@@ -199,16 +220,21 @@ export abstract class Constants {
     public static readonly LOCAL_FLASHCARD = "local-flashcard";
     public static readonly LOCAL_FILEPOSITION = "local-fileposition";
     public static readonly LOCAL_FILESPATHS = "local-filespaths";
+    public static readonly LOCAL_PINNED_DOC_TREE_STATE = "local-pinned-doc-tree-state";
     public static readonly LOCAL_DIALOGPOSITION = "local-dialogposition";
     public static readonly LOCAL_SESSION_FIRSTLOAD = "local-session-firstload";
+    /** @deprecated 内置偏好改用 config.appearance.outlineKeepCurrentExpand，不再读取此旧键 */
     public static readonly LOCAL_OUTLINE = "local-outline";
     public static readonly LOCAL_PLUGIN_DOCKS = "local-plugin-docks";
     public static readonly LOCAL_IMAGES = "local-images";
     public static readonly LOCAL_EMOJIS = "local-emojis";
     public static readonly LOCAL_MOVE_PATH = "local-move-path";
+    /** @deprecated 内置偏好改用 config.fileTree.recentDocsSort，不再读取此旧键 */
     public static readonly LOCAL_RECENT_DOCS = "local-recent-docs";
     public static readonly LOCAL_CLOSED_TABS = "local-closed-tabs";
     public static readonly LOCAL_AV_CALENDAR_MODES = "local-av-calendar-modes";
+    public static readonly LOCAL_TABS_READING = "local-tabs-reading";
+    public static readonly LOCAL_MINDMAP_VIEWPORTS = "local-mindmap-viewports";
 
     // dialog
     public static readonly DIALOG_CONFIRM = "dialog-confirm";
@@ -312,7 +338,6 @@ export abstract class Constants {
     public static readonly MENU_AV_ADD_FILTER = "av-add-filter"; // 数据库添加筛选条件菜单
     public static readonly MENU_AV_ADD_SORT = "av-add-sort"; // 数据库添加排序条件菜单
     public static readonly MENU_AV_COL_OPTION = "av-col-option"; // 数据库单选多选字段的选项编辑菜单
-    public static readonly MENU_AV_COL_FORMAT_NUMBER = "av-col-format-number"; // 数据库数字字段格式化菜单
     public static readonly MENU_AV_COL_FORMAT_DATE = "av-col-format-date"; // 数据库日期字段格式化菜单
     public static readonly MENU_AV_GROUP_DATE = "avGroupDate"; // 数据库日期字段分组菜单的日期菜单
     public static readonly MENU_AV_GROUP_SORT = "avGroupSort"; // 数据库日期字段分组菜单的排序菜单
@@ -489,6 +514,8 @@ export abstract class Constants {
     // "⌥↩" 写死，但可自定义
     public static readonly SIYUAN_KEYMAP: Config.IKeymap = {
         general: {
+            previousDatabaseRow: {default: "", custom: ""},
+            nextDatabaseRow: {default: "", custom: ""},
             openContextMenu: {default: "⌘/", custom: "⌘/"},
             mainMenu: {default: "⌥\\", custom: "⌥\\"},
             commandPanel: {default: "⌥⇧P", custom: "⌥⇧P"},
@@ -509,16 +536,7 @@ export abstract class Constants {
             closeTab: {default: "⌘W", custom: "⌘W"},
             agentChat: {default: "", custom: ""},
             agentSend: {default: "⌘↩", custom: "⌘↩"},
-            fileTree: {default: "⌃1", custom: "⌃1"},
-            outline: {default: "⌃2", custom: "⌃2"},
-            bookmark: {default: "⌃3", custom: "⌃3"},
-            tag: {default: "⌃4", custom: "⌃4"},
-            dailyNote: {default: "⌃5", custom: "⌃5"},
-            inbox: {default: "⌃6", custom: "⌃6"},
-            backlinks: {default: "⌃7", custom: "⌃7"},
-            graphView: {default: "⌃8", custom: "⌃8"},
-            globalGraph: {default: "⌃9", custom: "⌃9"},
-            riffCard: {default: "⌃0", custom: "⌃0"},
+            ...createDockKeymapDefaults("darwin"),
             config: {default: "⌥P", custom: "⌥P"},
             dataHistory: {default: "⌥H", custom: "⌥H"},
             toggleWin: {default: "⌥M", custom: "⌥M"},
@@ -608,6 +626,8 @@ export abstract class Constants {
                 jumpToParent: {default: "⇧⌘J", custom: "⇧⌘J"},
                 moveToUp: {default: "⇧⌘↑", custom: "⇧⌘↑"},
                 moveToDown: {default: "⇧⌘↓", custom: "⇧⌘↓"},
+                goToDocumentStart: {default: "⌘Home", custom: "⌘Home"},
+                goToDocumentEnd: {default: "⌘End", custom: "⌘End"},
                 selectToPageStart: {default: "⇧Home", custom: "⇧Home"},
                 selectToPageEnd: {default: "⇧End", custom: "⇧End"},
                 scrollPageUpWithoutMovingCaret: {default: "⌥PageUp", custom: "⌥PageUp"},
@@ -654,9 +674,15 @@ export abstract class Constants {
                 check: {default: "⌘L", custom: "⌘L"},
                 "ordered-list": {default: "", custom: ""},
                 list: {default: "", custom: ""},
+                mindmap: {default: "", custom: ""},
                 table: {default: "⌘O", custom: "⌘O"},
                 code: {default: "⇧⌘K", custom: "⇧⌘K"},
                 quote: {default: "", custom: ""},
+                calloutNote: {default: "", custom: ""},
+                calloutTip: {default: "", custom: ""},
+                calloutImportant: {default: "", custom: ""},
+                calloutWarning: {default: "", custom: ""},
+                calloutCaution: {default: "", custom: ""},
                 clearInline: {default: "⌘\\", custom: "⌘\\"},
             },
             heading: {

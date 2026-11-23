@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
@@ -199,7 +187,8 @@ func insertLocalAssets(id string, assetAbsPaths []string, isUpload, validateHTML
 			assetAbsPath = util.FileURLToLocalPath(assetAbsPath)
 		}
 		baseName := filepath.Base(assetAbsPath)
-		if validateHTMLPath && (util.IsSensitivePath(assetAbsPath) || EncryptedRawPathBoxID(assetAbsPath) != "") {
+		if validateHTMLPath && (util.IsSensitiveHTMLAssetPath(assetAbsPath) || EncryptedRawPathBoxID(assetAbsPath) != "") {
+			logging.LogWarnf("HTML paste local asset path is not allowed [%s]", assetAbsPath)
 			recordAssetUploadFailure(&failedFiles, index, baseName, errors.New("local asset path is not allowed"))
 			continue
 		}
@@ -329,9 +318,10 @@ func Upload(c *gin.Context) {
 
 // AssetUploadRequest 保留目标字段的缺省状态，并按输入顺序接收全部文件。
 type AssetUploadRequest struct {
-	ID            *string
-	AssetsDirPath *string
-	Files         []*multipart.FileHeader
+	ID                 *string
+	AssetsDirPath      *string
+	Files              []*multipart.FileHeader
+	ExcludeFromCleanup bool
 }
 type AssetUploadResult struct {
 	ErrFiles    []string             `json:"errFiles"`
@@ -342,6 +332,20 @@ type AssetUploadResult struct {
 
 // UploadAssets 将附件写入目标资源目录，保留逐文件结果、加密写入和首条失败提示。
 func UploadAssets(request AssetUploadRequest) (result *AssetUploadResult, message string, err error) {
+	if request.ExcludeFromCleanup {
+		if request.ID != nil || (request.AssetsDirPath != nil && *request.AssetsDirPath != "assets" && !strings.HasPrefix(*request.AssetsDirPath, "assets/")) {
+			return nil, "", errors.New("cleanup exclusion uploads require the global assets directory")
+		}
+		syncLock.Lock()
+		defer syncLock.Unlock()
+		rules, readErr := readAssetCleanupIgnore()
+		if readErr != nil {
+			return nil, "", readErr
+		}
+		if _, readErr = compileAssetCleanupIgnore(rules.Content); readErr != nil {
+			return nil, "", readErr
+		}
+	}
 
 	assetsDirPath := filepath.Join(util.DataDir, "assets")
 	var uploadBoxID string // 记录上传目标 boxID，供 writeAssetFile 判断是否需加密
@@ -375,13 +379,35 @@ func UploadAssets(request AssetUploadRequest) (result *AssetUploadResult, messag
 			return
 		}
 		// assetsDirPath 可能指向加密 box（调用方未传 id），反查 boxID 让文件名脱敏和内容加密生效
-		if pathBox := ExtractBoxIDFromAssetsPath(assetsDirPath); pathBox != "" && IsEncryptedBox(pathBox) {
+		if pathBox := util.BoxIDFromDataPath(assetsDirPath); pathBox != "" && IsEncryptedBox(pathBox) {
 			uploadBoxID = pathBox
 			boxAssetsDir := filepath.Join(util.DataDir, pathBox, "assets")
 			if rel, relErr := filepath.Rel(boxAssetsDir, assetsDirPath); relErr == nil && rel != ".." &&
 				!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 				// 加密资源通过 box 查询参数定位，响应转换为 box 内的标准 assets 相对路径。
 				relAssetsDirPath = path.Join("assets", filepath.ToSlash(rel))
+			}
+		}
+	}
+	if request.ExcludeFromCleanup {
+		if relAssetsDirPath != path.Clean(relAssetsDirPath) || strings.ContainsAny(relAssetsDirPath, "\\:\r\n\x00") {
+			return nil, "", errors.New("invalid global assets upload directory")
+		}
+		resolved, resolveErr := ResolveAssetPathWithMissingLeaf(assetsDirPath)
+		root, rootErr := ResolveAssetPathWithMissingLeaf(util.GetDataAssetsAbsPath())
+		if resolveErr != nil {
+			return nil, "", resolveErr
+		}
+		if rootErr != nil {
+			return nil, "", rootErr
+		}
+		rel, relErr := filepath.Rel(root, resolved)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			return nil, "", errors.New("cleanup exclusion upload directory escapes global assets")
+		}
+		for _, file := range request.Files {
+			if gulu.OS.IsDarwin() && strings.HasSuffix(file.Filename, ".rtfd.zip") {
+				return nil, "", errors.New("cleanup exclusion uploads do not support directory assets")
 			}
 		}
 	}
@@ -448,6 +474,9 @@ func UploadAssets(request AssetUploadRequest) (result *AssetUploadResult, messag
 		}
 
 		existAssetPath := GetAssetPathByHash(hash, uploadBoxID)
+		if request.ExcludeFromCleanup && !reusableCleanupUploadAsset(existAssetPath) {
+			existAssetPath = ""
+		}
 		if "" != existAssetPath {
 			originalName := assetNameWithoutID(filepath.Base(existAssetPath))
 			if !strings.EqualFold(assetNameWithoutID(fName), originalName) {
@@ -565,6 +594,16 @@ func UploadAssets(request AssetUploadRequest) (result *AssetUploadResult, messag
 	}
 
 	result = &AssetUploadResult{ErrFiles: errFiles, FailedFiles: failedFiles, SuccFiles: succFiles, SuccMap: succMap}
+	if request.ExcludeFromCleanup && len(succFiles) > 0 {
+		paths := make([]string, 0, len(succFiles))
+		for _, file := range succFiles {
+			paths = append(paths, file.Path)
+		}
+		if _, err = addAssetCleanupIgnore(paths); err != nil {
+			IncSync()
+			return nil, "", fmt.Errorf("uploaded files were retained but cleanup exclusion could not be saved: %w", err)
+		}
+	}
 
 	IncSync()
 
@@ -594,7 +633,7 @@ func getAssetsDir(boxLocalPath, docDirLocalPath string) (assets string) {
 // 非加密笔记本按 reader 直接写（走 filelock.WriteFileByReader 原路径，保留锁语义）。
 func writeAssetFile(writePath string, src io.Reader, boxID, originalName string) (err error) {
 	// 从 writePath 反查真实 boxID，与传入 boxID 交叉校验
-	pathBoxID := ExtractBoxIDFromAssetsPath(writePath)
+	pathBoxID := util.BoxIDFromDataPath(writePath)
 	// 传入 boxID 与路径 box 都非空但不一致：路径指向另一个 box，拒绝（防跨 box 写入）
 	if boxID != "" && pathBoxID != "" && boxID != pathBoxID {
 		return fmt.Errorf("boxID mismatch: param=%s, path=%s", boxID, pathBoxID)

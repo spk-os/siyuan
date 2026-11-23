@@ -13,7 +13,8 @@ import {
 import {getAPI} from "./API";
 import {getFrontend, isMobile, isWindow} from "../util/functions";
 import {Constants} from "../constants";
-import {beginPluginTeardown, destroyPlugin} from "./uninstall";
+import {beginPluginTeardown, destroyPlugin, destroyPluginByName} from "./uninstall";
+import {rememberCustomTabPlugins, setCustomTabCatalogAvailable} from "./customTabOwner";
 import {setStorageVal} from "../protyle/util/compatibility";
 import {getAllEditor} from "../layout/getAll";
 import {getPluginDockEntryKey, refreshDockCatalog} from "../config/entryVisibility/catalog";
@@ -28,6 +29,8 @@ import {
     deactivateCustomBlockPlugin,
 } from "./customBlockRender";
 import {getHostCapabilities} from "../util/hostCapabilities";
+import {isSettingsWindow} from "../config/setting/windowContext";
+import {ensureLute} from "../protyle/util/lute";
 
 const requireFunc = (key: string) => {
     if (key === "siyuan") {
@@ -93,6 +96,7 @@ const getLifecycleManager = (app: App) => {
                 throw new Error(`plugin ${plugin.name} has already been loaded`);
             }
             app.plugins.push(plugin);
+            rememberCustomTabPlugins(app, [plugin.name]);
         },
         onload: (plugin) => plugin.onload(),
         init: (plugin) => plugin.kernel.init(),
@@ -104,6 +108,7 @@ const getLifecycleManager = (app: App) => {
         shouldReloadOnDataChange: (plugin) => plugin.onDataChanged === Plugin.prototype.onDataChanged,
         onDataChanged: (plugin, reason) => plugin.onDataChanged(reason),
         onunload: (plugin) => {
+            plugin.setting?.close();
             deactivateCustomBlockPlugin(plugin.name);
             beginPluginTeardown(plugin);
             return plugin.onunload();
@@ -114,16 +119,32 @@ const getLifecycleManager = (app: App) => {
             deactivateCustomBlockPlugin(plugin.name);
             destroyPlugin(app, plugin, isUninstall);
         },
+        disposeMissingInstance: name => destroyPluginByName(app, name),
         onError: (name, hook, error) => console.error(`plugin ${name} ${hook} error:`, error),
     });
     lifecycleManagers.set(app, manager);
     return manager;
 };
 
-const createPluginDataLoader = () => {
+const fetchPluginData = async (names?: string[]) => {
+    const settingsWindow = isSettingsWindow();
+    const response = await fetchSyncPost("/api/petal/loadPetals", {
+        frontend: getFrontend(), ...(names ? {names} : {}), ...(settingsWindow ? {settingsWindow: true} : {}),
+    });
+    if (settingsWindow && response.code !== 0) {
+        throw new Error(response.msg || "Could not read settings plugins");
+    }
+    const items = response.code === 0 && Array.isArray(response.data) ?
+        response.data.filter(item => !settingsWindow || item.settingsWindow === true) : [];
+    if (settingsWindow && items.length) await ensureLute({reloadOnFailure: false});
+    return items;
+};
+
+const createPluginDataLoader = (names: string[]) => {
+    const requestedNames = Array.from(new Set(names));
     let promise: Promise<IPluginData[]>;
     return (name: string) => {
-        promise ??= fetchSyncPost("/api/petal/loadPetals", {frontend: getFrontend()}).then(response => response.code === 0 && Array.isArray(response.data) ? response.data : []);
+        promise ??= fetchPluginData(requestedNames);
         return promise.then(items => items.find(item => item.name === name));
     };
 };
@@ -136,12 +157,12 @@ export const loadPlugins = async (app: App, names?: string[], init = true) => {
     let tasks: Promise<void>[];
     let shouldStart = true;
     if (names) {
-        const loadPluginData = createPluginDataLoader();
+        const loadPluginData = createPluginDataLoader(names);
         tasks = Array.from(new Set(names)).map(name => manager.requestLoad(name, () => loadPluginData(name)));
     } else {
         const batch = manager.beginLoadBatch(!manager.isStarted());
-        const response = await fetchSyncPost("/api/petal/loadPetals", {frontend: getFrontend()});
-        tasks = (response.code === 0 && Array.isArray(response.data) ? response.data : []).map(item => manager.requestBatchLoad(item.name, item, batch));
+        const [items] = await Promise.all([fetchPluginData(), rememberInstalledPlugins(app)]);
+        tasks = items.map(item => manager.requestBatchLoad(item.name, item, batch));
         shouldStart = manager.isLatestLoadBatch(batch);
     }
     if (shouldStart) {
@@ -149,6 +170,20 @@ export const loadPlugins = async (app: App, names?: string[], init = true) => {
     }
     if (!init) {
         await Promise.all(tasks);
+    }
+};
+
+const rememberInstalledPlugins = async (app: App) => {
+    if (isSettingsWindow() || isMobile()) { return; }
+    setCustomTabCatalogAvailable(app, false);
+    try {
+        const response = await fetchSyncPost("/api/bazaar/getInstalledPlugin", {frontend: getFrontend(), keyword: ""});
+        if (response.code === 0 && Array.isArray(response.data?.packages)) {
+            rememberCustomTabPlugins(app, response.data.packages.map(plugin => plugin.name));
+            setCustomTabCatalogAvailable(app, true);
+        }
+    } catch (error) {
+        console.error("Could not read installed plugins for custom tabs:", error);
     }
 };
 
@@ -179,9 +214,15 @@ export const loadPlugin = async (app: App, item: IPluginData) => {
         return;
     }
     const manager = getLifecycleManager(app);
+    if (isSettingsWindow()) {
+        await loadPlugins(app, [item.name], false);
+        return manager.getInstance(item.name);
+    }
     manager.start();
     await manager.requestLoad(item.name, async () => item);
+    /// #if !MOBILE
     saveLayout();
+    /// #endif
     getAllEditor().forEach(editor => {
         editor.protyle.toolbar.update(editor.protyle);
     });
@@ -236,6 +277,7 @@ const updateDock = (dockItem: Config.IUILayoutDockTab[], index: number, plugin: 
 };
 
 const mountPlugin = (plugin: Plugin) => {
+    if (isSettingsWindow()) return;
     if (!isWindow() || isMobile()) {
         plugin.topBarIcons.forEach(element => {
             if (document.contains(element)) {
@@ -256,6 +298,7 @@ const mountPlugin = (plugin: Plugin) => {
             return;
         }
         const statusElement = document.getElementById("status");
+        if (!statusElement) return;
         if (element.getAttribute("data-location") === "right") {
             statusElement.insertAdjacentElement("beforeend", element);
         } else {
@@ -270,7 +313,7 @@ const mountPlugin = (plugin: Plugin) => {
 
 export const afterLayoutReady = (app: App) => {
     const manager = getLifecycleManager(app);
-    void manager.setLayoutReady();
+    return manager.setLayoutReady();
 };
 
 const getPluginCatalogPlugins = (plugin: Plugin) => window.siyuan.ws?.app?.plugins || [plugin];
@@ -382,7 +425,7 @@ export const reloadPlugin = async (app: App, data: IPluginReloadData = {}) => {
         !uninstallNames.has(name) && !unloadNames.has(name)));
     const dataChangeNames = new Set((data.dataChangePlugins || []).filter(name =>
         !uninstallNames.has(name) && !unloadNames.has(name) && !reloadNames.has(name)));
-    const loadPluginData = createPluginDataLoader();
+    const loadPluginData = createPluginDataLoader([...reloadNames, ...dataChangeNames]);
     const tasks: Promise<void>[] = [];
     uninstallNames.forEach(name => tasks.push(manager.requestUninstall(name)));
     unloadNames.forEach(name => tasks.push(manager.requestUnload(name)));
@@ -406,8 +449,19 @@ export const unloadPlugin = async (app: App, name: string) => {
     await manager.requestUnload(name);
 };
 
-export const uninstallPlugin = async (app: App, name: string) => {
+// 窗口销毁时同步撤销实例，异步钩子的迟到完成不能重新挂载界面。
+export const disposePlugins = (app: App) => lifecycleManagers.get(app)?.dispose();
+
+// 重连后以当前启用清单恢复实例，期间收到的更新请求优先于这次快照。
+export const refreshPlugins = async (app: App) => {
+    if (!getHostCapabilities().plugins) return;
     const manager = getLifecycleManager(app);
+    const batch = manager.beginLoadBatch();
+    const [items] = await Promise.all([fetchPluginData(), rememberInstalledPlugins(app)]);
+    if (!manager.isLatestLoadBatch(batch)) return;
+    const names = new Set(items.map(item => item.name));
+    const tasks = app.plugins.filter(plugin => !names.has(plugin.name)).map(plugin => manager.requestBatchUnload(plugin.name, batch));
+    tasks.push(...items.map(item => manager.requestBatchLoad(item.name, item, batch, true)));
     manager.start();
-    await manager.requestUninstall(name);
+    await Promise.all(tasks);
 };

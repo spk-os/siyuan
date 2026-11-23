@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package util
 
@@ -117,6 +105,7 @@ func ChatGPT(msg string, contextMsgs []string, c *AIClient, apiBaseURL, protocol
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 	ctx = ContextWithOpenAIResponsesBaseURL(ctx, apiBaseURL)
+	ctx = ContextWithOpenAIChatTemperature(ctx, req.Temperature)
 	resp, err := CreateOpenAICompletion(ctx, c, protocol, req, nil)
 	if err != nil {
 		PushErrMsg("Requesting failed, please check kernel log for more details", 3000)
@@ -173,16 +162,22 @@ func ExtraBodyForModel(model string) map[string]any {
 	return nil
 }
 
-// extraBodyTransport 包装一个 HTTPDoer，在 chat/completions 请求体中注入额外字段。
-// 利用 go-openai 在 client 层暴露的 HTTPDoer 扩展点（Chat 路径不支持 withExtraBody），
-// 对流式与非流式 chat 请求都生效；非 chat 请求原样透传。
+type openAIChatTemperatureKey struct{}
+
+// Chat 请求用上下文区分显式温度与未设置值，避免 SDK 的 omitempty 丢失零温度。
+func ContextWithOpenAIChatTemperature(ctx context.Context, temperature float32) context.Context {
+	return context.WithValue(ctx, openAIChatTemperatureKey{}, temperature)
+}
+
+// 通过 HTTPDoer 为流式和非流式 Chat 请求补充显式温度及模型额外参数。
 type extraBodyTransport struct {
 	base      openai.HTTPDoer
 	extraBody map[string]any
 }
 
 func (t *extraBodyTransport) Do(req *http.Request) (*http.Response, error) {
-	if len(t.extraBody) == 0 || req.Method != http.MethodPost || !strings.Contains(req.URL.Path, "chat/completions") {
+	temperature, explicitTemperature := req.Context().Value(openAIChatTemperatureKey{}).(float32)
+	if (!explicitTemperature && len(t.extraBody) == 0) || req.Method != http.MethodPost || !strings.Contains(req.URL.Path, "chat/completions") {
 		return t.base.Do(req)
 	}
 
@@ -195,13 +190,21 @@ func (t *extraBodyTransport) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	var payload map[string]any
-	if err = json.Unmarshal(body, &payload); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	// 重写请求体时保留 seed 等整数的精度。
+	decoder.UseNumber()
+	if err = decoder.Decode(&payload); err != nil || payload == nil || !json.Valid(body) {
 		// 请求体解析失败，用原始 body 透传，绝不破坏请求。
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
 		return t.base.Do(req)
 	}
 
+	if explicitTemperature {
+		if _, present := payload["temperature"]; !present {
+			payload["temperature"] = temperature
+		}
+	}
 	maps.Copy(payload, t.extraBody)
 
 	merged, err := json.Marshal(payload)
@@ -224,19 +227,19 @@ func NewAIClientWithModel(apiKey, apiBaseURL, model string, headers ...map[strin
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = apiBaseURL
 	var transport openai.HTTPDoer = newAIProviderHTTPClient(apiBaseURL, headers...)
-	if len(extra) > 0 {
-		transport = &extraBodyTransport{base: transport, extraBody: extra}
-	}
+	transport = &extraBodyTransport{base: transport, extraBody: extra}
 	if geminiThoughtSignatures {
 		transport = WrapGeminiThoughtSignatureTransport(transport)
 	}
+	transport = &aiErrorResponseTransport{base: transport}
 	transport = &reasoningResponseTransport{base: transport}
 	config.HTTPClient = transport
 	return &AIClient{Client: openai.NewClientWithConfig(config), baseURL: apiBaseURL,
-		anthropicHTTP: newAnthropicHTTPClient(apiKey, apiBaseURL, headers...)}
+		anthropicHTTP: newAnthropicHTTPClient(apiKey, apiBaseURL, headers...),
+		geminiHTTP:    newGeminiInteractionsHTTPClient(apiKey, apiBaseURL, headers...)}
 }
 
-// TestModel 测试模型可用性。先调用 ListModels（GET /v1/models）拉取可用模型清单，
+// TestModel 测试模型可用性。先按协议拉取可用模型清单，
 // 再按 Provider 协议发送极简文本生成请求，确认所选协议实际可用。
 // 返回值：available 为可用模型清单（仅 ListModels 成功时填充），matched 表示 model 是否可用，
 // err 为请求错误（鉴权失败、网络异常、模型不存在等，原样返回便于调用方展示原因）。
@@ -252,9 +255,13 @@ func TestModel(apiKey, apiBaseURL, protocol, model string, timeout int, headers 
 	// 优先校验模型是否在可用清单中
 	var availableIDs []string
 	var listErr error
-	if IsAnthropicMessagesProtocol(protocol) {
+	if IsAnthropicMessagesProtocol(protocol) || IsGeminiInteractionsProtocol(protocol) {
 		var models []AvailableModel
-		models, listErr = listAnthropicModels(ctx, client)
+		if IsGeminiInteractionsProtocol(protocol) {
+			models, listErr = listGeminiInteractionModels(ctx, client)
+		} else {
+			models, listErr = listAnthropicModels(ctx, client)
+		}
 		for _, m := range models {
 			availableIDs = append(availableIDs, m.ID)
 		}
@@ -282,14 +289,27 @@ func TestModel(apiKey, apiBaseURL, protocol, model string, timeout int, headers 
 		logging.LogInfof("list models failed [%s], test with text completion: %s", apiBaseURL, listErr)
 	}
 
-	messages := []openai.ChatCompletionMessage{{Role: "user", Content: "1"}}
+	messages := []openai.ChatCompletionMessage{{Role: "user", Content: "Reply with 1"}}
 	request := openai.ChatCompletionRequest{
 		Model:               model,
 		Messages:            messages,
 		MaxCompletionTokens: 1,
 		Temperature:         1,
 	}
-	if IsOpenAIResponsesProtocol(protocol) || IsAnthropicMessagesProtocol(protocol) {
+	if !IsOpenAIResponsesProtocol(protocol) && !IsAnthropicMessagesProtocol(protocol) && !IsGeminiInteractionsProtocol(protocol) {
+		// Chat Completions 的输出预算包含推理 token，连通性测试使用有限预算生成简短回复。
+		request.MaxCompletionTokens = 1024
+	}
+	if IsOpenAIResponsesProtocol(protocol) {
+		// Responses 的输出预算至少为 16，包含可能使用的推理 token。
+		request.MaxCompletionTokens = 16
+	}
+	if IsGeminiInteractionsProtocol(protocol) {
+		// Gemini 的思考也消耗输出预算，为极简连通性测试保留有限预算。
+		request.MaxCompletionTokens = 256
+		request.ReasoningEffort = "low"
+	}
+	if IsOpenAIResponsesProtocol(protocol) || IsAnthropicMessagesProtocol(protocol) || IsGeminiInteractionsProtocol(protocol) {
 		request.Stream = true
 		var stream *OpenAICompletionStream
 		stream, err = CreateOpenAICompletionStream(ctx, client, protocol, request, nil)
@@ -308,6 +328,10 @@ func TestModel(apiKey, apiBaseURL, protocol, model string, timeout int, headers 
 		}
 	} else {
 		_, err = CreateOpenAICompletion(ctx, client, protocol, request, nil)
+	}
+	if IsGeminiInteractionsProtocol(protocol) && errors.Is(err, errGeminiInteractionIncomplete) {
+		// 受限预算可能被思考耗尽，已校验的终止响应仍能证明协议连通；正常生成继续将不完整响应视为错误。
+		err = nil
 	}
 	if nil != err {
 		matched = false
@@ -444,26 +468,6 @@ func firstValidModelContextLength(values ...json.RawMessage) int {
 		return int(parsed)
 	}
 	return 0
-}
-
-func IsNetworkError(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "actively refused") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "connection failed") ||
-		strings.Contains(msg, "hostname resolution") ||
-		strings.Contains(msg, "no address associated with hostname") ||
-		strings.Contains(msg, "request canceled while waiting for connection") ||
-		strings.Contains(msg, "exceeded while awaiting") ||
-		strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "connection") ||
-		strings.Contains(msg, "refused") ||
-		strings.Contains(msg, "socket") ||
-		strings.Contains(msg, "eof") ||
-		strings.Contains(msg, "closed") ||
-		strings.Contains(msg, "network")
 }
 
 // embeddingHTTPClient 单例 HTTP 客户端，复用连接池并限制每主机最大连接数，

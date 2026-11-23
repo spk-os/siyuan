@@ -1,23 +1,10 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -33,6 +20,10 @@ import (
 )
 
 func RemoveTag(label string) (err error) {
+	return removeTag(label, nil)
+}
+
+func removeTag(label string, beforeCommit func()) (err error) {
 	util.PushEndlessProgress(Conf.Language(116))
 	util.RandomSleep(1000, 2000)
 
@@ -55,7 +46,7 @@ func RemoveTag(label string) (err error) {
 
 	for treeID, blocks := range treeBlocks {
 		util.PushEndlessProgress("[" + treeID + "]")
-		tree, e := LoadTreeByBlockIDWithReindex(treeID)
+		tree, original, e := loadBatchMutationTree(treeID)
 		if nil != e {
 			util.ClearPushProgress(100)
 			return e
@@ -63,6 +54,11 @@ func RemoveTag(label string) (err error) {
 
 		generateTreeHistory(tree, historyDir)
 
+		finishRich, richErr := treenode.MaterializeTableCellRich(tree.Root)
+		if richErr != nil {
+			return richErr
+		}
+		finishTitles := treenode.MaterializeInlineTitles(tree.Root)
 		var unlinks []*ast.Node
 		for _, blockID := range blocks {
 			node := treenode.GetNodeInTree(tree, blockID)
@@ -99,113 +95,15 @@ func RemoveTag(label string) (err error) {
 		for _, n := range unlinks {
 			n.Unlink()
 		}
-		util.PushEndlessProgress(fmt.Sprintf(Conf.Language(111), util.EscapeHTML(tree.Root.IALAttr("title"))))
-		if err = writeTreeUpsertQueue(tree); err != nil {
-			util.ClearPushProgress(100)
-			return
+		finishTitles()
+		if err = finishRich(); err != nil {
+			return err
 		}
-		util.RandomSleep(50, 150)
-		reloadTreeIDs = append(reloadTreeIDs, tree.ID)
-	}
-
-	indexHistoryDir(filepath.Base(historyDir), util.NewLute())
-	sql.FlushQueue()
-
-	reloadTreeIDs = gulu.Str.RemoveDuplicatedElem(reloadTreeIDs)
-	for _, id := range reloadTreeIDs {
-		ReloadProtyle(id)
-	}
-
-	updateAttributeViewBlockText(updateNodes)
-
-	sql.FlushQueue()
-	util.PushClearProgress()
-	return
-}
-
-func RenameTag(oldLabel, newLabel string) (err error) {
-	if invalidChar := treenode.ContainsMarker(newLabel); "" != invalidChar {
-		return fmt.Errorf(Conf.Language(112), invalidChar)
-	}
-
-	newLabel = strings.TrimPrefix(newLabel, "/")
-	newLabel = strings.TrimSuffix(newLabel, "/")
-	newLabel = strings.TrimSpace(newLabel)
-
-	if "" == newLabel {
-		return errors.New(Conf.Language(114))
-	}
-
-	if oldLabel == newLabel {
-		return
-	}
-
-	util.PushEndlessProgress(Conf.Language(110))
-	util.RandomSleep(500, 1000)
-
-	tags := sql.QueryTagSpansByLabel(oldLabel)
-	treeBlocks := map[string][]string{}
-	for _, tag := range tags {
-		if blocks, ok := treeBlocks[tag.RootID]; !ok {
-			treeBlocks[tag.RootID] = []string{tag.BlockID}
-		} else {
-			treeBlocks[tag.RootID] = append(blocks, tag.BlockID)
+		util.PushEndlessProgress(fmt.Sprintf(Conf.Language(111), util.EscapeHTML(treenode.ReadDocumentTitle(tree.Root).Text)))
+		if beforeCommit != nil {
+			beforeCommit()
 		}
-	}
-
-	var reloadTreeIDs []string
-	updateNodes := map[string]*ast.Node{}
-	historyDir, err := getHistoryDir(HistoryOpReplace)
-	if nil != err {
-		return
-	}
-
-	for treeID, blocks := range treeBlocks {
-		util.PushEndlessProgress("[" + treeID + "]")
-		tree, e := LoadTreeByBlockIDWithReindex(treeID)
-		if nil != e {
-			util.ClearPushProgress(100)
-			return e
-		}
-
-		generateTreeHistory(tree, historyDir)
-
-		for _, blockID := range blocks {
-			node := treenode.GetNodeInTree(tree, blockID)
-			if nil == node {
-				continue
-			}
-
-			if ast.NodeDocument == node.Type {
-				if docTagsVal := node.IALAttr("tags"); strings.Contains(docTagsVal, oldLabel) {
-					docTags := strings.Split(docTagsVal, ",")
-					var tmp []string
-					for _, docTag := range docTags {
-						if strings.HasPrefix(docTag, oldLabel+"/") || docTag == oldLabel {
-							docTag = strings.Replace(docTag, oldLabel, newLabel, 1)
-							tmp = append(tmp, docTag)
-						} else {
-							tmp = append(tmp, docTag)
-						}
-					}
-					node.SetIALAttr("tags", strings.Join(tmp, ","))
-				}
-				continue
-			}
-
-			nodeTags := node.ChildrenByType(ast.NodeTextMark)
-			for _, nodeTag := range nodeTags {
-				if nodeTag.IsTextMarkType("tag") {
-					if strings.HasPrefix(nodeTag.TextMarkTextContent, oldLabel+"/") || nodeTag.TextMarkTextContent == oldLabel {
-						nodeTag.TextMarkTextContent = strings.Replace(nodeTag.TextMarkTextContent, oldLabel, newLabel, 1)
-					}
-				}
-			}
-
-			updateNodes[node.ID] = node
-		}
-		util.PushEndlessProgress(fmt.Sprintf(Conf.Language(111), util.EscapeHTML(tree.Root.IALAttr("title"))))
-		if err = writeTreeUpsertQueue(tree); err != nil {
+		if err = writeReplacementTree(tree, original, "", false, nil); err != nil {
 			util.ClearPushProgress(100)
 			return
 		}
@@ -230,10 +128,6 @@ func RenameTag(oldLabel, newLabel string) (err error) {
 
 type TagBlocks []*Block
 
-func (s TagBlocks) Len() int           { return len(s) }
-func (s TagBlocks) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-func (s TagBlocks) Less(i, j int) bool { return s[i].ID < s[j].ID }
-
 type Tag struct {
 	Name     string `json:"name"`
 	Label    string `json:"label"`
@@ -248,6 +142,8 @@ type Tag struct {
 type Tags []*Tag
 
 func BuildTags(ignoreMaxListHintArg bool, appID string, sortVal int) (ret *Tags) {
+	confFileTreeSnapshot := Conf.LoadFileTree()
+
 	FlushTxQueue()
 	sql.FlushQueue()
 
@@ -265,9 +161,9 @@ func BuildTags(ignoreMaxListHintArg bool, appID string, sortVal int) (ret *Tags)
 	for _, tag := range tags {
 		*tmp = append(*tmp, tag)
 		countTag(tag, &total)
-		if Conf.FileTree.MaxListCount < total && !ignoreMaxListHintArg {
-			if nil == util.NotificationsCfg || util.NotificationsCfg.TagMaxList {
-				util.PushMsgWithApp(appID, fmt.Sprintf(Conf.Language(243), Conf.FileTree.MaxListCount), 7000)
+		if confFileTreeSnapshot.MaxListCount < total && !ignoreMaxListHintArg {
+			if nil == util.NotificationsCfg.Load() || util.NotificationsCfg.Load().TagMaxList {
+				util.PushMsgWithApp(appID, fmt.Sprintf(Conf.Language(243), confFileTreeSnapshot.MaxListCount), 7000)
 			}
 			break
 		}
@@ -326,7 +222,7 @@ func SearchTags(keyword string) (ret []string) {
 			continue
 		}
 
-		_, t := search.MarkText(label, keyword, 1024, Conf.Search.CaseSensitive)
+		_, t := search.MarkText(label, keyword, 1024, Conf.Search.Load().CaseSensitive)
 		ret = append(ret, t)
 	}
 	sort.Strings(ret)
@@ -336,7 +232,7 @@ func SearchTags(keyword string) (ret []string) {
 func labelBlocksByKeyword(keyword string) (ret map[string]TagBlocks) {
 	ret = map[string]TagBlocks{}
 
-	tags := sql.QueryTagSpansByKeyword(keyword, Conf.Search.Limit)
+	tags := sql.QueryTagSpansByKeyword(keyword, Conf.Search.Load().Limit)
 	set := hashset.New()
 	for _, tag := range tags {
 		set.Add(tag.BlockID)

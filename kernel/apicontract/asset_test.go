@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package apicontract
 
 import (
@@ -5,6 +9,25 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestUnusedAssetsRequestCompatibility(t *testing.T) {
+	for _, body := range []string{"", `{}`, `null`, `[]`, `invalid`, `{"keyword":null}`, `{"all":null}`, `{"all":false}`, `{"unknown":true}`} {
+		request, err := GetUnusedAssets.Decode(strings.NewReader(body))
+		if err != nil || request.Keyword != "" || request.All {
+			t.Fatalf("legacy unused asset request changed: %+v %v", request, err)
+		}
+	}
+	request, err := GetUnusedAssets.Decode(strings.NewReader(`{"keyword":" Cover-20261025.JPG ","all":true}`))
+	if err != nil || request.Keyword != " Cover-20261025.JPG " || !request.All {
+		t.Fatalf("filename filter changed: %+v %v", request, err)
+	}
+	if _, err = GetUnusedAssets.Decode(strings.NewReader(`{"keyword":123}`)); err == nil {
+		t.Fatal("non-string keyword accepted")
+	}
+	if _, err = GetUnusedAssets.Decode(strings.NewReader(`{"all":1}`)); err == nil {
+		t.Fatal("non-boolean complete list flag accepted")
+	}
+}
 
 func TestAssetRequestCompatibility(t *testing.T) {
 	for _, body := range []string{
@@ -68,6 +91,32 @@ func TestAssetResponseVariants(t *testing.T) {
 	} {
 		if err := bundle.ValidateResponse("POST", "/api/asset/"+test.path, []byte(test.body)); err == nil {
 			t.Errorf("invalid asset payload accepted: %s", test.body)
+		}
+	}
+}
+
+func TestAssetCleanupIgnoreContractRequests(t *testing.T) {
+	for _, text := range []string{"true", "false", ""} {
+		request, err := UploadAsset.DecodeMultipart(&multipart.Form{Value: map[string][]string{"excludeFromCleanup": {text, "ignored"}}})
+		if err != nil || request.ExcludeFromCleanup == nil || *request.ExcludeFromCleanup != text {
+			t.Fatalf("upload protection binding: %+v %v", request, err)
+		}
+	}
+	request, err := UploadAsset.DecodeMultipart(&multipart.Form{})
+	if err != nil || request.ExcludeFromCleanup != nil {
+		t.Fatalf("upload protection omission: %+v %v", request, err)
+	}
+	for _, body := range []string{`{}`, `{"content":""}`, `{"content":"","expectedRevision":null}`, `{"content":null,"expectedRevision":"x"}`} {
+		if _, err := SetAssetCleanupIgnore.Decode(strings.NewReader(body)); err == nil {
+			t.Fatalf("invalid save accepted: %s", body)
+		}
+	}
+	if _, err := SetAssetCleanupIgnore.Decode(strings.NewReader(`{"content":"","expectedRevision":"revision"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{}`, `{"paths":null}`, `{"paths":[null]}`, `{"paths":[1]}`} {
+		if _, err := AddAssetCleanupIgnore.Decode(strings.NewReader(body)); err == nil {
+			t.Fatalf("invalid paths accepted: %s", body)
 		}
 	}
 }

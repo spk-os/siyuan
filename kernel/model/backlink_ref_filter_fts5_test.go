@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 //go:build fts5
 
 package model
@@ -16,8 +20,8 @@ import (
 func TestBacklinkRefFilterListContextAndCandidates(t *testing.T) {
 	fixture := setupStructureTransactionTest(t)
 	setupFoldTransactionDatabase(t, fixture)
-	Conf.Search = conf.NewSearch()
-	Conf.Search.BacklinkMentionDoc = true
+	Conf.Search.Store(conf.NewSearch())
+	Conf.Search.Load().BacklinkMentionDoc = true
 	const archiveID = "20260909160000-archive"
 	const sameNameID = "20260909160001-sameref"
 	const itemID = "20260909160002-listitm"
@@ -78,7 +82,7 @@ func TestBacklinkRefFilterListContextAndCandidates(t *testing.T) {
 	if len(filtered) != 1 || count != 1 || filtered[0].Count != 1 {
 		t.Fatalf("unexpected filtered list/count: %+v, %d", filtered, count)
 	}
-	context, _ := GetBacklinkDocInBox(fixture.sourceID, fixture.targetID, "", false, false, "", filter)
+	context, _ := GetBacklinkDocInBox(fixture.sourceID, fixture.targetID, "", false, false, "", nil, filter)
 	if mentionCount == 0 || mentionCount != filteredMentionCount || !reflect.DeepEqual(mentions, filteredMentions) {
 		t.Fatal("excluding direct backlinks changed mentions")
 	}
@@ -96,7 +100,7 @@ func TestBacklinkRefFilterListContextAndCandidates(t *testing.T) {
 	if !ids[archiveID] || !ids[sameNameID] || !ids[fixture.sourceID] {
 		t.Fatalf("candidates should include excluded entries and distinguish equal names: %+v", candidates)
 	}
-	context, _ = GetBacklinkDocInBox(fixture.sourceID, fixture.targetID, "", false, false, "", nil)
+	context, _ = GetBacklinkDocInBox(fixture.sourceID, fixture.targetID, "", false, false, "", nil, nil)
 	if len(context) != 2 {
 		t.Fatalf("clearing the filter did not restore both entries: %+v", context)
 	}

@@ -21,19 +21,40 @@ const rendererModules = () => {
     };
     // 使用实际选区、区域解析与标题按键入口；不挂载无关的工具栏及页签控制器。
     modules["util/selection"] = `const revealTabsForTarget = () => {};
+        import {isHiddenTabContent} from "../render/tabsVisibility";
         import {getAtomicVerticalNavigationOwner} from "../wysiwyg/verticalNavigationState";
         import {getContenteditableElement} from "../wysiwyg/getBlock";
         import {hasClosestBlock} from "./hasClosest";\n` +
-        extract("util/selection", ["setFirstNodeRange", "setLastNodeRange", "focusByRange", "focusBlock", "getEditorRange"])
+        (extract("util/selectionOffsets", ["setLastNodeRange", "focusByRange"]) +
+        extract("util/selection", ["setFirstNodeRange", "focusBlock", "getEditorRange"]))
             .replace(/\/\/\/ #else[\s\S]*?\/\/\/ #endif/g, "");
     modules["util/hasClosest"] = readFileSync(path.join(root, "util/hasClosest.ts"), "utf8");
+    modules["util/tableCellRichContext"] = readFileSync(path.join(root, "util/tableCellRichContext.ts"), "utf8");
+    modules["render/tabsVisibility"] = readFileSync(path.join(root, "render/tabsVisibility.ts"), "utf8");
+    modules["util/selectionOffsets"] = "const revealTabsForTarget = () => {};\n" +
+        extract("util/selectionOffsets", ["focusByRange", "setLastNodeRange"]);
     modules["util/documentRange"] = readFileSync(path.join(root, "util/documentRange.ts"), "utf8");
     modules["wysiwyg/getBlock"] = 'import {hasClosestBlock, hasClosestByClassName} from "../util/hasClosest";\n' +
         extract("wysiwyg/getBlock", ["getContenteditableElement", "isContainerBlock", "getNextBlock", "getPreviousBlock"]);
-    modules["render/tabsRender"] = "export const setTabTitleNavigationEditing = () => false;";
+    modules["render/tabsRender"] = `export const setTabTitleNavigationEditing = (item, editing) => {
+        item.querySelector(".tab-item-info").style.display = editing ? "block" : "none";
+        item.dataset.tabsEditing = String(editing);
+        return true;
+    };`;
+    modules["util/tableExit"] = 'import {focusAdjacentVerticalRegion} from "../wysiwyg/verticalNavigation";\n' +
+        'import {getAdjacentVerticalBlock} from "../wysiwyg/verticalTarget";\n' +
+        'import {focusBlock} from "./selection";\n' + extract("util/tableCellRichNavigation", ["leaveRichTableCell"]);
     modules["../util/highlightById"] = "export const scrollCenter = () => {};";
+    modules["util/codeScrollCenter"] = 'import {hasClosestBlock} from "./hasClosest";\n' +
+        'import {isUndoViewportPreserved} from "../undo/viewport";\n' +
+        'import {getEditorRange} from "./selection";\n' +
+        'import {focusByRange} from "./selectionOffsets";\n' +
+        "const resolveVisibleListMindmapBlock = () => undefined, revealTabsForTarget = () => {};\n" +
+        "const isMobile = () => false;\n" + extract("../util/highlightById", ["scrollCenter"]);
+    modules["undo/viewport"] = readFileSync(path.join(root, "undo/viewport.ts"), "utf8");
     modules["render/av/focus"] = 'import {focusEditableAtGoalX} from "../../wysiwyg/verticalCaret";\n' +
         'import {isTableLikeView} from "./viewType";\n' +
+        'import {prepareAVColumnWindow} from "./columnWindow";\n' +
         'import {ensureAVTableBoundaryRow, getAVData} from "./virtualScroll";\n' +
         "const clearSelect = () => {};\n" +
         extract("render/av/focus", ["getVisibleAVTitle", "focusAVTitleByVerticalArrow", "focusAVVerticalRegion",
@@ -96,17 +117,21 @@ const rendererModules = () => {
         const restoreListMindmapFocus = () => false;
         const focusByOffset = element => { window.restoredFocusElement = element; return true; };\n` +
         extract("util/selection", ["restoreFocusContext"]);
-    for (const name of ["virtualScroll", "selectionState", "rangeSelect", "groupTableVirtual", "backlinkScroll", "viewType"]) {
+    for (const name of ["tableRowHeights", "columnWindow", "columnVirtualScroll", "virtualScroll", "selectionState", "rangeSelect", "groupTableVirtual", "backlinkScroll", "viewType", "capabilities", "capabilities.generated"]) {
         modules[`render/av/${name}`] = readFileSync(path.join(root, "render/av", `${name}.ts`), "utf8");
     }
     modules["../constants"] = "const SIYUAN_VERSION = 'test', NODE_ENV = 'test';\n" +
         readFileSync(path.join(root, "../constants.ts"), "utf8");
+    for (const name of ["dockKeymap", "keymapBindings"]) {
+        modules[`../util/${name}`] = readFileSync(path.join(root, "../util", `${name}.ts`), "utf8");
+    }
     modules["render/av/richText"] = "export const renderAVRichTextElements = () => {};";
     modules["render/av/row"] = `export const updateAVSelectionStatus = () => {};
         export const getRowHTML = ({row, rowIndex}) =>
             '<div class="av__row" data-id="' + row.id + '" data-index="' + rowIndex +
             '" style="height:30px"><div class="av__cell" data-col-id="c0" data-dtype="text">' + row.id + '</div></div>';`;
-    modules["render/av/focus"] = 'import {setAVCellAnchor} from "./rangeSelect";\n' +
+    modules["render/av/focus"] = 'import {ensureAVColumnWindow} from "./columnWindow";\n' +
+        'import {setAVCellAnchor} from "./rangeSelect";\n' +
         'import {focusBlock} from "../../util/selection";\n' +
         'import {hasClosestByClassName} from "../../util/hasClosest";\n' +
         "const addDragFill = () => {};\n" +
@@ -150,7 +175,8 @@ const rendererModules = () => {
     visitSelected(keydownSource);
     assert.ok(selectedBranch);
     modules["wysiwyg/blockSelection"] = readFileSync(path.join(root, "wysiwyg/blockSelection.ts"), "utf8");
-    modules["wysiwyg/selectedNavigationKeydown"] = `import {getEditorRange, focusByRange, setLastNodeRange} from "../util/selection";
+    modules["wysiwyg/selectedNavigationKeydown"] = `import {getEditorRange} from "../util/selection";
+        import {focusByRange, setLastNodeRange} from "../util/selectionOffsets";
         import {getAdjacentVerticalBlock, getAdjacentVisibleBlock} from "./verticalTarget";
         import {focusVerticalBlockSelection} from "./verticalNavigation";
         import {isDocumentBoundaryLoaded} from "../util/documentRange";
@@ -179,11 +205,14 @@ const rendererModules = () => {
     };
     visitTrim(onGet);
     assert.ok(trimBranch?.elseStatement && ts.isIfStatement(trimBranch.elseStatement));
-    modules["util/navigationTrim"] = `import {containsCurrentSelection} from "./documentRange";
+    modules["util/renderContent"] = extract("util/renderContent", ["getInsertedRenderRoots"]);
+    modules["util/navigationTrim"] = `import {containsCurrentSelection, updateDocumentTopEof} from "./documentRange";
+        import {getInsertedRenderRoots} from "./renderContent";
         import {Constants} from "../../constants";
         const invalidateTrackedRangesInElement = () => {}, disposeCustomBlocksInElement = () => {}, hideElements = () => {};
         export const run = (protyle, content, before) => {
             const options = {content, action: [before ? Constants.CB_GET_BEFORE : Constants.CB_GET_APPEND]};
+            let renderRoots;
             const REMOVED_OVER_HEIGHT = protyle.contentElement.clientHeight * 8;
             if (${trimBranch.expression.getText(onGet)}) ${trimBranch.thenStatement.getText(onGet)}
             else ${trimBranch.elseStatement.thenStatement.getText(onGet)}
@@ -360,7 +389,12 @@ const runGeometryCases = async () => {
         const text = direction === "down" ? `x\n${"long".repeat(200)}\n` : `${"long".repeat(200)}\nx\n`;
         const {code, content, scroller} = setup(text);
         scroller.scrollLeft = 1000;
-        assert.equal(focusEditableAtGoalX(code, direction, 40, content), true, `horizontal scroll ${direction}`);
+        const moved = focusEditableAtGoalX(code, direction, 40, content);
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        assert.equal(moved, true, `horizontal scroll ${direction}: ${JSON.stringify({scrollLeft: scroller.scrollLeft,
+            code: code.getBoundingClientRect(), scroller: scroller.getBoundingClientRect(),
+            rects: Array.from(range.getClientRects()).map(rect => rect.toJSON())})}`);
         assert.equal(scroller.scrollLeft, 0);
         cases++;
     }
@@ -370,6 +404,26 @@ const runGeometryCases = async () => {
         assert.equal(focusEditableAtGoalX(code, "down", 100, content), true);
         assert.equal(scroller.scrollLeft, 1000);
         assert.ok(Math.abs(getSelection().getRangeAt(0).getBoundingClientRect().left - 100) < 10);
+        cases++;
+    }
+    {
+        const {code, content, after} = setup("visible");
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        const rect = range.getBoundingClientRect();
+        const cover = document.createElement("div");
+        cover.style.cssText = `position:fixed;z-index:999;left:${rect.left - 1}px;top:${rect.top + rect.height / 2 - 1}px;width:${rect.width + 2}px;height:${rect.height / 2 + 2}px`;
+        document.body.append(cover);
+        assert.equal(document.elementFromPoint(40, rect.top + rect.height / 2), cover);
+        assert.equal(focusEditableAtGoalX(code, "down", 40, content), true,
+            "a partially covered caret can use its visible upper portion");
+        select(after.firstChild, 0);
+        cover.style.top = `${rect.top - 1}px`;
+        cover.style.height = `${rect.height + 2}px`;
+        assert.equal(focusEditableAtGoalX(code, "down", 40, content), false,
+            "an unrelated element covering the entire caret is never accepted as its hit target");
+        assert.equal(getSelection().anchorNode, after.firstChild);
+        cover.remove();
         cases++;
     }
     for (const style of ["display:none", "visibility:hidden", "height:0;overflow:hidden", "height:0;overflow:clip"]) {
@@ -419,9 +473,9 @@ const runEntryCases = async () => {
                 <div style="height:240px"></div>
             </div></div>`;
         const editor = document.querySelector(".protyle-wysiwyg");
-        const protyle = {element: document.getElementById("protyle"),
-            contentElement: document.querySelector(".protyle-content"), wysiwyg: {element: editor}, disabled: false};
         const title = document.getElementById("title");
+        const protyle = {element: document.getElementById("protyle"), title: {editElement: title},
+            contentElement: document.querySelector(".protyle-content"), wysiwyg: {element: editor}, disabled: false};
         editor.firstElementChild?.setAttribute("data-eof", "1");
         window.titleKeydown.bind(protyle, title);
         bindVerticalNavigationReset(editor);
@@ -436,6 +490,34 @@ const runEntryCases = async () => {
             `caret ${caret?.top}..${caret?.bottom}, viewport ${viewport.top}..${viewport.bottom}`);
     };
     let cases = 0;
+    {
+        const {protyle, editor, title} = setup(paragraph);
+        const {updateDocumentTopEof} = window.navigationModules("util/documentRange");
+        updateDocumentTopEof(editor);
+        editor.firstElementChild.outerHTML = `<div class="bq" data-type="NodeBlockquote" data-node-id="quote">${paragraph}</div>` +
+            '<div data-type="NodeParagraph" data-node-id="next" data-node-index="1"><div id="next" contenteditable="true">next</div></div>';
+        editor.addEventListener("keydown", event => {
+            if (event.key === "ArrowUp") {
+                const body = getSelection().anchorNode.parentElement.closest("[data-node-id]");
+                assert.equal(focusAdjacentVerticalRegion(protyle, body, "up", 40), "moved");
+                event.preventDefault();
+            }
+        });
+        for (const id of ["body", "next"]) {
+            title.focus();
+            select(title);
+            await ipcRenderer.invoke("vertical-navigation-key", "Down");
+            await frame();
+            assert.ok(document.getElementById(id).contains(getSelection().anchorNode), id);
+            await ipcRenderer.invoke("vertical-navigation-key", "Up");
+            await frame();
+            assert.ok(title.contains(getSelection().anchorNode), id);
+            if (id === "body") {
+                editor.firstElementChild.remove();
+            }
+        }
+        cases++;
+    }
     for (const lines of [0, 1, 3]) {
         window.siyuan.config.editor.cursorSurroundingLines = lines;
         for (const whiteSpace of ["pre", "pre-wrap"]) {
@@ -481,6 +563,30 @@ const runEntryCases = async () => {
         }
     }
     window.siyuan.config.editor.cursorSurroundingLines = 3;
+    for (const direction of ["up", "down"]) {
+        const {protyle, editor} = setup(`<div style="height:600px"></div>
+<div data-type="NodeTable" data-node-id="table"><table style="font:inherit"><tr><td><div class="table__cell-editor">
+<div class="protyle-content"><div class="protyle-wysiwyg">${paragraph}</div></div>
+</div></td></tr></table></div><div style="height:600px"></div>`);
+        const cell = editor.querySelector("td");
+        const element = cell.querySelector(".table__cell-editor");
+        const nested = {element, contentElement: element.querySelector(".protyle-content"),
+            wysiwyg: {element: element.querySelector(".protyle-wysiwyg")}, disabled: false};
+        window.navigationModules("util/tableCellRichContext").setTableCellRichContext(nested,
+            {owner: protyle, cell, finish: () => {}});
+        const body = cell.querySelector("[contenteditable]");
+        select(body);
+        protyle.contentElement.scrollTop = direction === "down" ? 450 : 640;
+        scheduleCaretScroll(nested, direction);
+        await frame();
+        const caret = getVerticalCaretRect(body, getSelection().getRangeAt(0));
+        const viewport = protyle.contentElement.getBoundingClientRect();
+        assert.ok(direction === "down" ? caret.bottom <= viewport.bottom - 90 + 1 :
+            caret.top >= viewport.top + 90 - 1,
+        `${direction}: table caret ${caret.top}..${caret.bottom}, viewport ${viewport.top}..${viewport.bottom}, scroll ${protyle.contentElement.scrollTop}`);
+        assert.equal(nested.contentElement.scrollTop, 0, "cell viewport stays in place");
+        cases++;
+    }
     for (const guard of ["disabled", "detached", "nested", "atomic"]) {
         const {protyle, editor} = setup(paragraph);
         const body = document.getElementById("body");
@@ -510,6 +616,31 @@ const runEntryCases = async () => {
         [`<div class="bq" data-node-id="hidden" style="display:none">hidden</div>${paragraph}`, "body", false],
         ["<div data-type=\"NodeTable\" data-node-id=\"table\"><table><tr><td id=\"target\" contenteditable=\"true\">cell</td></tr></table></div>", "target", false],
     ];
+    {
+        const tabs = `<div class="tabs" data-node-id="tabs" data-type="NodeTabs">
+<div class="tab-item" data-node-id="tab" data-type="NodeTabItem" data-tabs-hidden="false">
+<div class="tab-item-info" style="display:none"><div id="tab-title" class="tab-item-title" contenteditable="true">Title</div></div>
+<div class="tab-item-content">${paragraph}</div></div></div>`;
+        const {protyle, editor} = setup(`<div data-node-id="before">Before</div>${tabs}`);
+        const before = editor.firstElementChild;
+        assert.equal(focusAdjacentVerticalRegion(protyle, before, "down", 40), "moved");
+        assert.ok(document.getElementById("tab-title").contains(getSelection().anchorNode));
+        assert.equal(focusAdjacentVerticalRegion(protyle, document.getElementById("body").parentElement,
+            "up", 40), "moved");
+        assert.ok(document.getElementById("tab-title").contains(getSelection().anchorNode));
+        cases++;
+    }
+    for (const key of ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+        const {protyle, editor} = setup(`<div data-node-id="before" data-type="NodeParagraph"><div contenteditable="true">Before</div></div>
+<div data-type="NodeTable" data-node-id="table"><table><tr><td>Cell</td></tr></table></div>
+<div data-node-id="after" data-type="NodeParagraph"><div contenteditable="true">After</div></div>`);
+        const table = editor.querySelector('[data-node-id="table"]');
+        select(table.querySelector("td"));
+        assert.equal(window.navigationModules("util/tableExit").leaveRichTableCell(protyle, table, key, 40), true);
+        const target = editor.querySelector(`[data-node-id="${["ArrowUp", "ArrowLeft"].includes(key) ? "before" : "after"}"]`);
+        assert.ok(target.contains(getSelection().anchorNode), key);
+        cases++;
+    }
     window.titleEnterCalls = 0;
     variants.push([`<div id="target" class="custom-block" data-type="NodeCustomBlock" data-node-id="custom" contenteditable="false">
         <div contenteditable="true">plugin editor</div></div>`, "target", true]);
@@ -632,6 +763,9 @@ const runElectron = async () => {
         const lifecycleCases = await win.webContents.executeJavaScript(
             `(${require("./navigationLifecycle.cases.js").toString()})()`);
         console.log(`Vertical navigation: ${lifecycleCases} Electron lifecycle cases passed`);
+        const codeScrollCases = await win.webContents.executeJavaScript(
+            `(${require("./codeScrollSelection.cases.js").toString()})()`);
+        console.log(`Vertical navigation: ${codeScrollCases} Electron code scroll selection cases passed`);
     } catch (error) {
         console.error(error);
         exitCode = 1;
@@ -666,6 +800,7 @@ if (process.versions.electron && process.type === "browser") {
             assert.match(stdout, /Electron geometry cases passed/);
             assert.match(stdout, /Electron entry cases passed/);
             assert.match(stdout, /Electron lifecycle cases passed/);
+            assert.match(stdout, /Electron code scroll selection cases passed/);
         } finally {
             rmSync(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
         }

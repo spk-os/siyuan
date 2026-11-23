@@ -1,15 +1,9 @@
 import * as assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
 import {test} from "node:test";
-import {runInNewContext} from "node:vm";
-import {ModuleKind, ScriptTarget, transpileModule} from "typescript";
+import {ScriptTarget} from "typescript";
+import {loadModule} from "../../testSupport/loadModule";
 
-const compiled = transpileModule(readFileSync("src/protyle/wysiwyg/touchReference.ts", "utf8"), {
-    compilerOptions: {module: ModuleKind.CommonJS, target: ScriptTarget.ES2021},
-}).outputText;
-
-const fixture = (options: {reference?: string, uri?: any, selection?: string, root?: boolean} = {}) => {
-    const exports: any = {};
+const fixture = (options: {reference?: string, uri?: any, selection?: string, root?: boolean, hidden?: boolean} = {}) => {
     const calls: string[] = [];
     let opened: any;
     const dependencies = {
@@ -19,16 +13,16 @@ const fixture = (options: {reference?: string, uri?: any, selection?: string, ro
         saveBackScroll: () => calls.push("save"),
         hideElements: () => calls.push("hide"),
         processSiYuanUri: () => calls.push("uri"),
-        checkFold: (_id: string, callback: any) => callback(true, ["all"], options.root),
+        checkReferenceFold: (_id: string, callback: any) => callback(options.hidden ?? true,
+            [options.hidden === false ? "context" : "all"], options.root),
         parseSiYuanUriInfo: () => options.uri,
         hasClosestByAttribute: (_target: any, _name: string, type: string) => type === "block-ref" ?
             options.reference && {getAttribute: () => options.reference} : {getAttribute: () => "siyuan://blocks/target"},
     };
-    runInNewContext(compiled, {
-        exports,
+    const exports = loadModule<any>("src/protyle/wysiwyg/touchReference.ts", {
         require: () => dependencies,
         window: {getSelection: () => ({toString: () => options.selection || ""})},
-    });
+    }, ScriptTarget.ES2021);
     const result = exports.openTouchReference({app: "app"}, {}, {x: 10, y: 20});
     return {result, calls, opened};
 };
@@ -50,6 +44,14 @@ test("document links and attribute-view links retain their navigation behavior",
     assert.deepEqual(Array.from(root.opened.action), ["all"]);
     const av = fixture({uri: {id: "target", avItemID: "row"}});
     assert.deepEqual(av.calls, ["record", "save", "hide", "uri"]);
+});
+
+test("touch references retain context for visible folded targets", () => {
+    for (const options of [{reference: "target"}, {uri: {id: "target"}}]) {
+        const f = fixture({...options, hidden: false});
+        assert.equal(f.opened.zoomIn, false);
+        assert.deepEqual(Array.from(f.opened.action), ["context", "highlight"]);
+    }
 });
 
 test("text selection, ordinary text and external or invalid links do not navigate", () => {

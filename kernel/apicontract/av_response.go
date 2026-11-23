@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package apicontract
 
 type AVIDData struct {
@@ -26,14 +30,15 @@ type AVPrimaryValuesData struct {
 	Total    int          `json:"total"`
 }
 type AVRelationCandidatesData struct {
-	Name         string                        `json:"name"`
-	BlockIDs     []string                      `json:"blockIDs"`
-	CustomColors []*AVAttributeViewCustomColor `json:"customColors"`
-	NotebookID   string                        `json:"notebookID"`
-	Columns      []*AVTableColumn              `json:"columns"`
-	SelectedRows []*AVTableRow                 `json:"selectedRows"`
-	Rows         []*AVTableRow                 `json:"rows"`
-	Total        int                           `json:"total"`
+	NewItemPreview *AVRelationItemPreview        `json:"newItemPreview,omitempty"`
+	Name           string                        `json:"name"`
+	BlockIDs       []string                      `json:"blockIDs"`
+	CustomColors   []*AVAttributeViewCustomColor `json:"customColors"`
+	NotebookID     string                        `json:"notebookID"`
+	Columns        []*AVTableColumn              `json:"columns"`
+	SelectedRows   []*AVTableRow                 `json:"selectedRows"`
+	Rows           []*AVTableRow                 `json:"rows"`
+	Total          int                           `json:"total"`
 }
 type AVFilterSortData struct {
 	Filters []*AVViewFilter `json:"filters"`
@@ -56,6 +61,7 @@ type AVSearchData struct {
 	Results []*AVAvSearchResult `json:"results"`
 }
 type AVArchiveRenderData struct {
+	SubItems               *AVSubItemsConfig             `json:"subItems,omitempty"`
 	Name                   string                        `json:"name"`
 	ID                     string                        `json:"id"`
 	CustomColors           []*AVAttributeViewCustomColor `json:"customColors"`
@@ -71,9 +77,10 @@ type AVArchiveRenderData struct {
 }
 type AVRenderData struct {
 	AVArchiveRenderData
-	ContextFilter       *AVAttributeViewContextFilter        `json:"contextFilter"`
-	ContextFilterFields []*AVAttributeViewContextFilterField `json:"contextFilterFields"`
-	Target              *AVAttributeViewRenderTarget         `json:"target,omitempty"`
+	PendingHTTPTemplates []string                             `json:"pendingHTTPTemplates,omitempty"`
+	ContextFilter        *AVAttributeViewContextFilter        `json:"contextFilter"`
+	ContextFilterFields  []*AVAttributeViewContextFilterField `json:"contextFilterFields"`
+	Target               *AVAttributeViewRenderTarget         `json:"target,omitempty"`
 }
 type AVViewNotFound struct {
 	Error string `json:"error" api:"const=\"viewNotFound\""`

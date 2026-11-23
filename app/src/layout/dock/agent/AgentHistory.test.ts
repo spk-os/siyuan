@@ -4,6 +4,7 @@ import {
     applyAgentUserEdit,
     buildAgentPresentationEntries,
     findAgentUserEntryIndex,
+    formatAgentThinkingStats,
     getAgentThinkingDisplaySeconds,
     getAgentThinkingToolGroups,
     getAgentTurnContent,
@@ -53,6 +54,29 @@ describe("AgentHistory", () => {
         assert.equal(getAgentThinkingDisplaySeconds(0.499), 1);
         assert.equal(getAgentThinkingDisplaySeconds(1.499), 1);
         assert.equal(getAgentThinkingDisplaySeconds(1.5), 2);
+    });
+
+    it("appends the tool call count to the thinking header only when tools ran", () => {
+        const labels = {
+            agentThinking: "思考中",
+            agentThinkingDoneTime: "已思考 %s",
+            agentThinkingStats: "已思考 %s，调用 %s 次工具",
+            agentThinkingLiveStats: "思考中 %s，调用 %s 次工具",
+        };
+        assert.equal(formatAgentThinkingStats(12, 0, labels), "已思考 12s");
+        assert.equal(formatAgentThinkingStats(12, 1, labels), "已思考 12s，调用 1 次工具");
+        assert.equal(formatAgentThinkingStats(12, 3, labels), "已思考 12s，调用 3 次工具");
+        assert.equal(formatAgentThinkingStats(0, 2, labels, true), "思考中 0s，调用 2 次工具");
+        assert.equal(formatAgentThinkingStats(12, 0, labels, true), "思考中 12s");
+        assert.equal(formatAgentThinkingStats(12, 2, labels, true), "思考中 12s，调用 2 次工具");
+    });
+
+    it("keeps the previous thinking text when the duration is unknown", () => {
+        const labels = {agentThinking: "思考中", agentThinkingStats: "已思考 %s，调用 %s 次工具"};
+        assert.equal(formatAgentThinkingStats(undefined, 2, labels), "思考中");
+        assert.equal(formatAgentThinkingStats(undefined, 2, labels, true), "思考中");
+        assert.equal(formatAgentThinkingStats(12, 2, {agentThinkingDoneTime: "已思考 %s"}), "已思考 12s");
+        assert.equal(formatAgentThinkingStats(12, -1, {agentThinkingDoneTime: "已思考 %s"}), "已思考 12s");
     });
 
     it("copies all assistant rounds within the selected user turn", () => {
@@ -127,9 +151,12 @@ describe("AgentHistory", () => {
         assert.equal(isAgentRegenerateStateCurrent("session-1", "session-1", 2, 2, false, true), false);
     });
 
-    it("updates rich user message data together", () => {
+    it("updates rich user message data and send time together", (t) => {
+        const timestamp = 1792300000000;
+        t.mock.method(Date, "now", () => timestamp);
         const entry = {
             content: "Old content",
+            timestamp: 1,
             blockHTML: "<div>Old content</div>",
             references: [{id: "block-1", title: "Old reference"}],
         };
@@ -141,6 +168,7 @@ describe("AgentHistory", () => {
         });
         assert.deepEqual(entry, {
             content: "| A | B |",
+            timestamp,
             blockHTML: '<div data-type="NodeTable">table</div>',
             references,
         });

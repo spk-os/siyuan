@@ -1,0 +1,130 @@
+{
+  "fields": [
+    {
+      "id": "field-0",
+      "name": "",
+      "type": "block",
+      "hidden": false,
+      "icon": "custom"
+    },
+    {
+      "id": "field-1",
+      "name": "Name <&\" text",
+      "type": "text",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-2",
+      "name": "Name <&\" number",
+      "type": "number",
+      "hidden": false,
+      "icon": ""
+    },
+    {
+      "id": "field-3",
+      "name": "",
+      "type": "date",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-4",
+      "name": "Name <&\" select",
+      "type": "select",
+      "hidden": false,
+      "icon": "custom"
+    },
+    {
+      "id": "field-5",
+      "name": "Name <&\" mSelect",
+      "type": "mSelect",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-6",
+      "name": "",
+      "type": "url",
+      "hidden": false,
+      "icon": ""
+    },
+    {
+      "id": "field-7",
+      "name": "Name <&\" email",
+      "type": "email",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-8",
+      "name": "Name <&\" phone",
+      "type": "phone",
+      "hidden": false,
+      "icon": "custom"
+    },
+    {
+      "id": "field-9",
+      "name": "",
+      "type": "mAsset",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-10",
+      "name": "Name <&\" template",
+      "type": "template",
+      "hidden": false,
+      "icon": ""
+    },
+    {
+      "id": "field-11",
+      "name": "Name <&\" created",
+      "type": "created",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-12",
+      "name": "",
+      "type": "updated",
+      "hidden": false,
+      "icon": "custom"
+    },
+    {
+      "id": "field-13",
+      "name": "Name <&\" checkbox",
+      "type": "checkbox",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-14",
+      "name": "Name <&\" relation",
+      "type": "relation",
+      "hidden": false,
+      "icon": ""
+    },
+    {
+      "id": "field-15",
+      "name": "",
+      "type": "rollup",
+      "hidden": true,
+      "icon": ""
+    },
+    {
+      "id": "field-16",
+      "name": "Name <&\" lineNumber",
+      "type": "lineNumber",
+      "hidden": false,
+      "icon": "custom"
+    }
+  ],
+  "goldens": {
+    "table": "e3e20e7e21e91289c4161679c615970d51f1ff7f7eb90b66b02c429703306d3a",
+    "list": "e3e20e7e21e91289c4161679c615970d51f1ff7f7eb90b66b02c429703306d3a",
+    "gallery": "a663b270c5089543067878c4515e5089f2d5500dd7b3161588d778b418fe98b1",
+    "kanban": "a663b270c5089543067878c4515e5089f2d5500dd7b3161588d778b418fe98b1",
+    "calendar": "e3e20e7e21e91289c4161679c615970d51f1ff7f7eb90b66b02c429703306d3a"
+  }
+}

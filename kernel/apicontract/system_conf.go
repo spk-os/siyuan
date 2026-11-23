@@ -1,3 +1,7 @@
+// SiYuan - https://github.com/siyuan-note/siyuan
+// Copyright (c) 2020-present, b3log.org
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package apicontract
 
 type SystemAppConf struct {
@@ -22,6 +26,7 @@ type SystemAppConf struct {
 	Search         *SettingSearch        `json:"search" api:"optional,nullable"`
 	Flashcard      *SettingFlashcard     `json:"flashcard" api:"optional,nullable"`
 	AI             *SettingAI            `json:"ai" api:"optional,nullable"`
+	OCR            *SettingOCR           `json:"ocr" api:"optional,nullable"`
 	Secrets        *SettingSecrets       `json:"secrets" api:"optional,nullable"`
 	Variables      *SettingVariables     `json:"variables" api:"optional,nullable"`
 	Bazaar         *SettingBazaar        `json:"bazaar" api:"optional,nullable"`
@@ -134,6 +139,7 @@ type SystemSystem struct {
 	DisabledFeatures                  []string            `json:"disabledFeatures" api:"optional,nullable"`
 	MicrosoftDefenderExcluded         bool                `json:"microsoftDefenderExcluded" api:"optional,nullable"`
 	SafeMode                          bool                `json:"safeMode" api:"optional,nullable"`
+	SettingsWindow                    bool                `json:"settingsWindow" api:"optional,nullable"`
 }
 
 type SystemNetworkProxy struct {
@@ -143,13 +149,16 @@ type SystemNetworkProxy struct {
 }
 
 type SystemSync struct {
-	CloudName           string         `json:"cloudName" api:"optional,nullable"`
-	Enabled             bool           `json:"enabled" api:"optional,nullable"`
-	Perception          bool           `json:"perception" api:"optional,nullable"`
-	Mode                int            `json:"mode" api:"optional,nullable"`
-	Interval            int            `json:"interval" api:"optional,nullable"`
-	Synced              int64          `json:"synced" api:"optional,nullable"`
-	Stat                string         `json:"stat" api:"optional,nullable"`
+	CloudName  string `json:"cloudName" api:"optional,nullable"`
+	Enabled    bool   `json:"enabled" api:"optional,nullable"`
+	Perception bool   `json:"perception" api:"optional,nullable"`
+	Mode       int    `json:"mode" api:"optional,nullable"`
+	Interval   int    `json:"interval" api:"optional,nullable"`
+	Synced     int64  `json:"synced" api:"optional,nullable"`
+	Stat       string `json:"stat" api:"optional,nullable"`
+	// LastResult is kernel-maintained: 0 unknown (including older configurations), 1 success, 2 failure or automatic pause.
+	// An in-progress operation does not replace the last completed result.
+	LastResult          int            `json:"lastResult" api:"optional,nullable"`
 	GenerateConflictDoc bool           `json:"generateConflictDoc" api:"optional,nullable"`
 	AssetDownloadMode   int            `json:"assetDownloadMode" api:"optional,nullable"`
 	Provider            int            `json:"provider" api:"optional,nullable"`

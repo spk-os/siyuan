@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package api
 
@@ -22,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/asaskevich/EventBus"
 	"github.com/gin-contrib/sse"
 	"github.com/gin-gonic/gin"
 	"github.com/olahol/melody"
@@ -35,14 +22,11 @@ const (
 	MessageTypeString MessageType = "string"
 	MessageTypeBinary MessageType = "binary"
 	MessageTypeClose  MessageType = "close"
-
-	EvtBroadcastMessage = "broadcast.message"
 )
 
 var (
 	BroadcastChannels = sync.Map{} // [string (channel-name)] -> *BroadcastChannel
 	UnifiedSSE        = &EventSourceServer{
-		EventBus:  EventBus.New(),
 		WaitGroup: &sync.WaitGroup{},
 		Subscriber: &EventSourceSubscriber{
 			lock:  &sync.Mutex{},
@@ -165,10 +149,25 @@ func (s *EventSourceSubscriber) Count() int {
 	return s.count
 }
 
+type eventSourceStream struct {
+	messages MessageEventChannel
+	done     chan struct{}
+}
+
+func (stream *eventSourceStream) send(event *MessageEvent) {
+	// 发布快照可能仍持有已退出的订阅，取消只关闭通知通道，避免向已关闭的消息通道发送。
+	select {
+	case stream.messages <- event:
+	case <-stream.done:
+	}
+}
+
 type EventSourceServer struct {
-	EventBus   EventBus.Bus
-	WaitGroup  *sync.WaitGroup
-	Subscriber *EventSourceSubscriber
+	publishLock sync.Mutex
+	streamsLock sync.Mutex
+	streams     []*eventSourceStream
+	WaitGroup   *sync.WaitGroup
+	Subscriber  *EventSourceSubscriber
 }
 
 // SendEvent sends a message to all subscribers
@@ -181,8 +180,17 @@ func (s *EventSourceServer) SendEvent(event *MessageEvent) bool {
 		}
 	}
 
-	s.EventBus.Publish(EvtBroadcastMessage, event)
-	return s.EventBus.HasCallback(EvtBroadcastMessage)
+	s.publishLock.Lock()
+	defer s.publishLock.Unlock()
+	s.streamsLock.Lock()
+	streams := append([]*eventSourceStream(nil), s.streams...)
+	s.streamsLock.Unlock()
+	for _, stream := range streams {
+		stream.send(event)
+	}
+	s.streamsLock.Lock()
+	defer s.streamsLock.Unlock()
+	return len(s.streams) > 0
 }
 
 // Subscribe subscribes to specified broadcast channels
@@ -306,14 +314,23 @@ func (s *EventSourceServer) GetRetry(c *gin.Context) uint {
 //
 // If the client is gone, it will return true
 func (s *EventSourceServer) Stream(c *gin.Context, step func(event *MessageEvent, ok bool) bool) bool {
-	channel := make(MessageEventChannel)
-	defer close(channel)
-
-	subscriber := func(event *MessageEvent) {
-		channel <- event
-	}
-	s.EventBus.Subscribe(EvtBroadcastMessage, subscriber)
-	defer s.EventBus.Unsubscribe(EvtBroadcastMessage, subscriber)
+	stream := &eventSourceStream{messages: make(MessageEventChannel), done: make(chan struct{})}
+	s.streamsLock.Lock()
+	s.streams = append(s.streams, stream)
+	s.streamsLock.Unlock()
+	defer func() {
+		close(stream.done)
+		s.streamsLock.Lock()
+		defer s.streamsLock.Unlock()
+		for i, current := range s.streams {
+			if current == stream {
+				copy(s.streams[i:], s.streams[i+1:])
+				s.streams[len(s.streams)-1] = nil
+				s.streams = s.streams[:len(s.streams)-1]
+				break
+			}
+		}
+	}()
 
 	clientGone := c.Writer.CloseNotify()
 	for {
@@ -321,7 +338,7 @@ func (s *EventSourceServer) Stream(c *gin.Context, step func(event *MessageEvent
 		case <-clientGone:
 			logging.LogInfof("event source connection is closed by client")
 			return true
-		case event, ok := <-channel:
+		case event, ok := <-stream.messages:
 			if step(event, ok) {
 				continue
 			}
@@ -410,6 +427,9 @@ func ConstructBroadcastChannel(channel string) *BroadcastChannel {
 		return util.IsSessionOriginAllowedRequest(r)
 	}
 	websocket.Config.MaxMessageSize = 1024 * 1024 * 128 // 128 MiB
+	websocket.HandleError(func(s *melody.Session, err error) {
+		util.LogWebSocketError(s, channel, err)
+	})
 
 	// broadcast string message to other session
 	websocket.HandleMessage(func(s *melody.Session, msg []byte) {

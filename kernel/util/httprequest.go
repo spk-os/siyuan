@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package util
 
@@ -27,8 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -47,15 +34,17 @@ const (
 // 防止智能体被诱导发起 SSRF 攻击。web_fetch 与 http_request 共用此校验。
 // https://github.com/siyuan-note/siyuan/security/advisories/GHSA-rg26-cg95-gq6p
 func CheckHostSSRF(host string) error {
-	ips, err := net.LookupIP(host)
+	return checkHostSSRFContext(context.Background(), host)
+}
+
+func checkHostSSRFContext(ctx context.Context, host string) error {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
 		return errors.New("failed to resolve host: " + err.Error())
 	}
-	for _, ip := range ips {
-		// 与 SSRFSafeDialer 共用 isPrivateIP，覆盖 NAT64、6to4、Teredo 等 IPv6 过渡地址。
-		if isPrivateIP(ip) {
-			return errors.New("access to private/internal IP is prohibited")
-		}
+	// 与 SSRFSafeDialer 共用 isPrivateIP，覆盖 NAT64、6to4、Teredo 等 IPv6 过渡地址。
+	if slices.ContainsFunc(ips, isPrivateIP) {
+		return errors.New("access to private/internal IP is prohibited")
 	}
 	return nil
 }
@@ -358,14 +347,9 @@ func HTTPRequest(method, rawURL string, headers map[string]string, body string) 
 
 	// 二进制响应落盘，返回文件路径，供智能体按需进一步处理。
 	if !isTextContentType(contentType) {
-		importDir := filepath.Join(TempDir, "import")
-		if merr := os.MkdirAll(importDir, 0755); merr != nil {
-			return statusCode, contentType, "", errors.New("create import dir failed: " + merr.Error())
-		}
-		filename := extractFilename(rawURL, contentType)
-		filePath := filepath.Join(importDir, filename)
-		if werr := os.WriteFile(filePath, respBody, 0644); werr != nil {
-			return statusCode, contentType, "", errors.New("write file failed: " + werr.Error())
+		filePath, werr := saveImportedFile(rawURL, contentType, respBody)
+		if werr != nil {
+			return statusCode, contentType, "", werr
 		}
 		return statusCode, contentType, fmt.Sprintf("Saved to: %s (%d bytes)", filePath, len(respBody)), nil
 	}

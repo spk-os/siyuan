@@ -1,3 +1,4 @@
+import {AdaptiveDialog} from "../../dialog/adaptiveDialog";
 import type {SettingTabBuilder} from "../setting/builder";
 import {Constants} from "../../constants";
 import {fetchPost} from "../../util/fetch";
@@ -8,7 +9,9 @@ import {getHostCapabilities} from "../../util/hostCapabilities";
 import {openChangelog} from "../../boot/openChangelog";
 import {writeClipboardData} from "../../protyle/util/compatibility";
 import {showMessage} from "../../dialog/message";
-import {Dialog} from "../../dialog";
+/// #if !BROWSER
+import {ipcRenderer} from "electron";
+/// #endif
 
 const registerAboutVersionGroup = (tab: SettingTabBuilder) => {
     const group = tab.group("version", "");
@@ -104,8 +107,25 @@ const genAboutVersionActions = (showCheckUpdate: boolean) => `<div class="fn__fl
 </div>`;
 
 const mountAboutVersionSlot = (root: HTMLElement) => {
+    let runtimeInfoClicks = 0;
     root.querySelector("#viewRuntimeInfoBtn")?.addEventListener("click", () => {
+        const started = performance.now();
+        const click = ++runtimeInfoClicks;
+        const request = Date.now();
+        const logStage = (stage: string) => {
+            const msg = `runtime info frontend [request=${request}, click=${click}, stage=${stage}, ` +
+                `total=${Math.round(performance.now() - started)}ms, visibility=${document.visibilityState}]`;
+            /// #if !BROWSER
+            ipcRenderer.send(Constants.SIYUAN_CMD, {cmd: "writeLog", msg});
+            /// #else
+            console.info(msg);
+            /// #endif
+        };
+        logStage("start");
+        let received = false;
         fetchPost("/api/system/getRuntimeInfo", {}, (response) => {
+            received = true;
+            logStage("response");
             const lines = [response.data.text, `Frontend: ${Constants.SIYUAN_VERSION}`, `User agent: ${navigator.userAgent}`];
             /// #if !BROWSER
             if (typeof process !== "undefined" && process.versions?.electron) {
@@ -113,7 +133,7 @@ const mountAboutVersionSlot = (root: HTMLElement) => {
             }
             /// #endif
             const text = lines.join("\n");
-            const dialog = new Dialog({
+            const dialog = new AdaptiveDialog({
                 title: window.siyuan.languages.runtimeInfo,
                 width: "min(720px, 92vw)",
                 content: `<div class="b3-dialog__content">
@@ -133,10 +153,17 @@ const mountAboutVersionSlot = (root: HTMLElement) => {
                 showMessage(window.siyuan.languages.copied);
                 dialog.destroy();
             });
+            logStage("dialog_created");
+            // 等待弹窗开启延时后的绘制帧，区分接口等待与渲染线程的调度延迟。
+            setTimeout(() => {
+                requestAnimationFrame(() => logStage("animation_frame"));
+            }, Constants.TIMEOUT_OPENDIALOG);
+        }).finally(() => {
+            if (!received) logStage("request_failed");
         });
     });
-    root.querySelector("#viewChangelogBtn")?.addEventListener("click", () => {
-        openChangelog(true);
+    root.querySelector("#viewChangelogBtn")?.addEventListener("click", (event) => {
+        void openChangelog(true, event.currentTarget as HTMLButtonElement);
     });
     const updateElement = root.querySelector("#checkUpdateBtn") as HTMLButtonElement | null;
     updateElement?.addEventListener("click", () => {

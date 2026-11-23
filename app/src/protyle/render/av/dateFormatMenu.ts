@@ -1,8 +1,5 @@
-import {Menu} from "../../../plugin/Menu";
 import {transaction} from "../../wysiwyg/transaction";
-import {Constants} from "../../../constants";
 import {getAllEditor} from "../../../layout/getAll";
-import {formatDateDisplay, getLabelByDateFormat} from "./dateFormat";
 
 const refreshDatabaseAttributePanels = (protyle: IProtyle, avID: string) => {
     protyle.databaseAttributePanel?.refresh();
@@ -13,42 +10,10 @@ const refreshDatabaseAttributePanels = (protyle: IProtyle, avID: string) => {
     });
 };
 
-export const formatDate = (options: {
-    avPanelElement: Element,
-    element: HTMLElement,
-    protyle: IProtyle,
-    colId: string,
-    avID: string,
-    type: "date" | "created" | "updated",
-    oldFormat: TAVDateFormat
-}) => {
-    const menu = new Menu(Constants.MENU_AV_COL_FORMAT_DATE);
-    (["", "full", "month-day-year", "day-month-year", "year-month-day"] as TAVDateFormat[]).forEach((format) => {
-        menu.addItem({
-            checked: format === options.oldFormat,
-            iconHTML: "",
-            label: getLabelByDateFormat(format),
-            accelerator: format === "full" ? formatDateDisplay(Date.now(), format) : undefined,
-            click() {
-                transaction(options.protyle, [{
-                    action: "setAttrViewColDateFormat",
-                    id: options.colId,
-                    avID: options.avID,
-                    format,
-                    type: options.type,
-                }], [{
-                    action: "setAttrViewColDateFormat",
-                    id: options.colId,
-                    avID: options.avID,
-                    format: options.oldFormat,
-                    type: options.type,
-                }], {
-                    callback: () => refreshDatabaseAttributePanels(options.protyle, options.avID),
-                });
-                options.avPanelElement.remove();
-            }
+export const setDateFieldFormat = (protyle: IProtyle, avID: string, colId: string,
+                                   type: "date" | "created" | "updated", format: TAVDateFormat, oldFormat: TAVDateFormat) => {
+    transaction(protyle, [{action: "setAttrViewColDateFormat", id: colId, avID, format, type}],
+        [{action: "setAttrViewColDateFormat", id: colId, avID, format: oldFormat, type}], {
+            callback: () => refreshDatabaseAttributePanels(protyle, avID),
         });
-    });
-    const rect = options.element.getBoundingClientRect();
-    menu.open({x: rect.left, y: rect.bottom, h: rect.height, w: rect.width, isLeft: true});
 };

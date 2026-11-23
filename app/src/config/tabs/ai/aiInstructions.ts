@@ -7,6 +7,7 @@ export const openAgentInstructions = () => {
         const revision = response.data.revision;
         let saving = false;
         const dialog = openInputDialog({
+            mobileSheet: {beforeClose: () => !saving},
             title: window.siyuan.languages.agentInstructions,
             value: response.data.content,
             multiline: true,
@@ -26,8 +27,9 @@ export const openAgentInstructions = () => {
                 const input = currentDialog.element.querySelector<HTMLTextAreaElement>("textarea");
                 button.disabled = true;
                 input.disabled = true;
-                // 失败时保留编辑内容和原修订，禁止静默覆盖其它窗口或同步产生的新版本。
+                // 失败时保留编辑内容和原修订，禁止静默覆盖其他窗口或同步产生的新版本。
                 fetchPost("/api/ai/agent/setInstructions", {content, revision}, () => {
+                    saving = false;
                     currentDialog.destroy();
                 }).finally(() => {
                     saving = false;

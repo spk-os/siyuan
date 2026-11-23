@@ -18,7 +18,17 @@ import {getUnRefList} from "../../search/unRef";
 import {toggleAssetHistory, toggleReplaceHistory, toggleSearchHistory} from "../../search/toggleHistory";
 import {Protyle} from "../../protyle";
 import {getKeysByLiElement} from "../../search/menu";
+import {getSearchAVMatches} from "../../search/avPreview";
 import {getHostCapabilities} from "../../util/hostCapabilities";
+
+const expandSearchResultGroup = (item: HTMLElement) => {
+    const group = item.parentElement;
+    if (group.parentElement?.id !== "searchList") {
+        return;
+    }
+    group.classList.remove("fn__none");
+    group.previousElementSibling.querySelector(".b3-list-item__arrow")?.classList.add("b3-list-item__arrow--open");
+};
 
 export const searchKeydown = (app: App, event: KeyboardEvent) => {
     if (getSelection().rangeCount === 0) {
@@ -61,14 +71,18 @@ export const searchKeydown = (app: App, event: KeyboardEvent) => {
     const unRefElement = element.querySelector("#searchUnRefPanel");
     const searchType = assetsElement.classList.contains("fn__none") ? (unRefElement.classList.contains("fn__none") ? "doc" : "unRef") : "asset";
     const listElement = searchType === "asset" ? assetsElement.querySelector("#searchAssetList") : (searchType === "doc" ? element.querySelector("#searchList") : unRefElement.querySelector("#searchUnRefList"));
-    const searchInputElement = element.querySelector("#searchInput") as HTMLInputElement;
+    const searchInputElement = element.querySelector("#searchInput") as HTMLTextAreaElement;
+    const targetId = (event.target as HTMLElement).id;
+    if (targetId === "searchInput" && config.method === 2 && !event.altKey && !event.ctrlKey && !event.metaKey &&
+        (event.key === "Enter" || event.key.startsWith("Arrow"))) {
+        return false;
+    }
     if (searchType === "doc" && matchHotKey(window.siyuan.config.keymap.general.newFile, event)) {
         if (config.method === 0) {
             newFile(app, searchInputElement.value);
         }
         return true;
     }
-    const targetId = (event.target as HTMLElement).id;
     if (event.key === "ArrowDown" && event.altKey) {
         if (searchType === "asset") {
             toggleAssetHistory(assetsElement);
@@ -85,6 +99,10 @@ export const searchKeydown = (app: App, event: KeyboardEvent) => {
     if (!window.siyuan.menus.menu.element.classList.contains("fn__none")) {
         // 不能返回 true，否则历史菜单无法使用快捷键
         return false;
+    }
+    if (searchType === "doc" && targetId === "replaceInput" && event.key === "Enter") {
+        replace(element, config, edit, false);
+        return true;
     }
     let currentList: HTMLElement = listElement.querySelector(".b3-list-item--focus");
     if (!currentList) {
@@ -117,6 +135,9 @@ export const searchKeydown = (app: App, event: KeyboardEvent) => {
         }
         const id = currentList.getAttribute("data-node-id");
         if (matchHotKey(window.siyuan.config.keymap.general.openContextMenu, event)) {
+            if (searchType === "doc" && config.group === 1) {
+                expandSearchResultGroup(currentList);
+            }
             const currentRect = currentList.getBoundingClientRect();
             initSearchMenu(id).popup({
                 x: currentRect.left + 30,
@@ -263,6 +284,9 @@ export const searchKeydown = (app: App, event: KeyboardEvent) => {
             currentList.nextElementSibling.classList.add("b3-list-item--focus");
         }
         currentList = listElement.querySelector(".b3-list-item--focus");
+        if (searchType === "doc" && config.group === 1) {
+            expandSearchResultGroup(currentList);
+        }
         if (listElement.scrollTop < currentList.offsetTop - listElement.clientHeight + lineHeight ||
             listElement.scrollTop > currentList.offsetTop) {
             listElement.scrollTop = currentList.offsetTop - listElement.clientHeight + lineHeight;
@@ -275,6 +299,7 @@ export const searchKeydown = (app: App, event: KeyboardEvent) => {
                 config,
                 value: searchInputElement.value,
                 edit,
+                matches: getSearchAVMatches(currentList),
             });
         } else {
             getArticle({
@@ -300,6 +325,9 @@ export const searchKeydown = (app: App, event: KeyboardEvent) => {
             currentList.previousElementSibling.classList.add("b3-list-item--focus");
         }
         currentList = listElement.querySelector(".b3-list-item--focus");
+        if (searchType === "doc" && config.group === 1) {
+            expandSearchResultGroup(currentList);
+        }
         if (listElement.scrollTop < currentList.offsetTop - listElement.clientHeight + lineHeight ||
             listElement.scrollTop > currentList.offsetTop - lineHeight * 2) {
             listElement.scrollTop = currentList.offsetTop - lineHeight * 2;
@@ -312,6 +340,7 @@ export const searchKeydown = (app: App, event: KeyboardEvent) => {
                 config,
                 value: searchInputElement.value,
                 edit,
+                matches: getSearchAVMatches(currentList),
             });
         } else if (searchType === "unRef") {
             getArticle({

@@ -35,6 +35,7 @@ export interface IPluginLifecycleAdapter<TData, TPlugin> {
     uninstall(plugin: TPlugin): Promise<void> | void;
     markDisposed(plugin: TPlugin): void;
     dispose(plugin: TPlugin, uninstall: boolean): void;
+    disposeMissingInstance?(name: string): void;
     onError(name: string, hook: TPluginLifecycleHook, error: unknown): void;
 }
 
@@ -72,6 +73,7 @@ interface IPluginLifecycleRecord<TData, TPlugin> {
     latestStructuralKind?: TPluginStructuralTaskKind;
     interrupt: IPluginLifecycleInterrupt;
     removalDeadline?: number;
+    removalDeadlineReached?: boolean;
 }
 
 export interface IPluginLifecycleOptions {
@@ -115,6 +117,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
     private latestLoadBatch = 0;
     private started = false;
     private layoutReady = false;
+    private disposed = false;
 
     constructor(adapter: IPluginLifecycleAdapter<TData, TPlugin>, options: IPluginLifecycleOptions = {}) {
         this.adapter = adapter;
@@ -125,7 +128,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
     }
 
     public start() {
-        if (this.started) {
+        if (this.started || this.disposed) {
             return;
         }
         this.started = true;
@@ -148,13 +151,21 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
         return batch.id === this.latestLoadBatch;
     }
 
-    public requestBatchLoad(name: string, data: TData, batch: IPluginLoadBatch) {
+    public requestBatchLoad(name: string, data: TData, batch: IPluginLoadBatch, reload = false) {
         this.sequence = Math.max(this.sequence, batch.sequence);
         const record = this.getRecord(name);
         if (batch.id !== this.latestLoadBatch || record.lastStructuralSequence > batch.sequence) {
             return Promise.resolve();
         }
-        return this.enqueueStructural(record, "load", async () => data, batch.sequence);
+        return this.enqueueStructural(record, reload ? "reload" : "load", async () => data, batch.sequence);
+    }
+
+    public requestBatchUnload(name: string, batch: IPluginLoadBatch) {
+        const record = this.getRecord(name);
+        if (batch.id !== this.latestLoadBatch || record.lastStructuralSequence > batch.sequence) {
+            return Promise.resolve();
+        }
+        return this.enqueueStructural(record, "unload", undefined, batch.sequence);
     }
 
     public requestLoad(name: string, dataProvider: () => Promise<TData | undefined>) {
@@ -196,7 +207,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
     }
 
     public setLayoutReady() {
-        if (this.layoutReady) {
+        if (this.layoutReady || this.disposed) {
             return Promise.resolve();
         }
         this.layoutReady = true;
@@ -216,7 +227,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
                 tasks.push(task);
             }
         });
-        return Promise.all(tasks).then(() => undefined);
+        return Promise.all(tasks).then((): undefined => undefined);
     }
 
     public getState(name: string): TPluginLifecycleState {
@@ -225,6 +236,29 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
 
     public getInstance(name: string) {
         return this.records.get(name)?.instance;
+    }
+
+    public dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.latestLoadBatch = ++this.loadBatchSequence;
+        this.records.forEach(record => {
+            record.lastStructuralSequence = ++this.sequence;
+            this.signalRemoval(record, this.now());
+            record.tasks.splice(0).forEach(task => task.waiters.forEach(resolve => resolve()));
+            const plugin = record.instance;
+            const unloading = record.state === "unloading" || record.state === "uninstalling";
+            record.instance = undefined;
+            record.state = "absent";
+            if (!plugin) return;
+            this.markDisposed(record.name, plugin);
+            if (!unloading) void this.observe(record.name, "onunload", () => this.adapter.onunload(plugin));
+            try {
+                this.adapter.dispose(plugin, false);
+            } catch (error) {
+                this.adapter.onError(record.name, "dispose", error);
+            }
+        });
     }
 
     private getRecord(name: string) {
@@ -269,6 +303,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
     }
 
     private enqueue(record: IPluginLifecycleRecord<TData, TPlugin>, task: IPluginLifecycleTask<TData>) {
+        if (this.disposed) return Promise.resolve();
         const promise = new Promise<void>((resolve) => task.waiters.push(resolve));
         record.tasks.push(task);
         this.schedule(record);
@@ -276,7 +311,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
     }
 
     private schedule(record: IPluginLifecycleRecord<TData, TPlugin>) {
-        if (!this.started || record.processing || record.tasks.length === 0 ||
+        if (this.disposed || !this.started || record.processing || record.tasks.length === 0 ||
             this.isDataChangeWaitingForReady(record)) {
             return;
         }
@@ -400,7 +435,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
         const provider = this.observe(record.name, "loadData", () => task.dataProvider?.());
         const result = await Promise.race([
             provider.then((data) => ({type: "data" as const, data})),
-            record.interrupt.promise.then(() => ({type: "interrupt" as const, data: undefined})),
+            record.interrupt.promise.then((): {type: "interrupt"; data: undefined} => ({type: "interrupt" as const, data: undefined})),
         ]);
         return result.type === "data" ? result.data : undefined;
     }
@@ -449,17 +484,26 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
         const plugin = record.instance;
         if (!plugin) {
             record.state = "absent";
+            if (uninstall) {
+                try {
+                    this.adapter.disposeMissingInstance?.(record.name);
+                } catch (error) {
+                    this.adapter.onError(record.name, "dispose", error);
+                }
+                this.markPendingUninstallsHandled(record, task);
+            }
             return;
         }
         // 加载阶段收到的拆除请求与后续拆除钩子共用首次请求建立的超时预算。
         // Promise 无法取消；预算耗尽后仍尽力调用后续钩子，但不再为它们追加等待时间。
         const deadline = record.removalDeadline ?? this.now() + this.teardownTimeout;
-        let deadlineReached = false;
+        let deadlineReached = record.removalDeadlineReached === true;
         record.state = "unloading";
-        if (!await this.runTeardownHook(record.name, "onunload", () => this.adapter.onunload(plugin), deadline)) {
+        if (!await this.runTeardownHook(record.name, "onunload", () => this.adapter.onunload(plugin), deadline, deadlineReached)) {
             deadlineReached = true;
             this.reportTimeout(record.name, "onunload");
         }
+        if (record.instance !== plugin) return;
         uninstall = uninstall || this.hasPendingUninstall(record);
         if (uninstall) {
             record.state = "uninstalling";
@@ -469,6 +513,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
             }
             this.markPendingUninstallsHandled(record, task);
         }
+        if (record.instance !== plugin) return;
         this.markDisposed(record.name, plugin);
         record.instance = undefined;
         record.state = "absent";
@@ -487,7 +532,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
             if (!result || typeof result.then !== "function") {
                 return Promise.resolve(true);
             }
-            const promise = Promise.resolve(result).catch((error) => {
+            const promise = Promise.resolve(result).catch((error): undefined => {
                 this.adapter.onError(name, hook, error);
             });
             if (deadlineReached || deadline <= this.now()) {
@@ -526,6 +571,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
                         return;
                     }
                     settled = true;
+                    record.removalDeadlineReached = true;
                     this.reportTimeout(record.name, hook);
                     resolve(false);
                 }, remaining);
@@ -560,7 +606,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
 
     private observe<T>(name: string, hook: TPluginLifecycleHook, callback: () => Promise<T> | T): Promise<T | undefined> {
         try {
-            return Promise.resolve(callback()).catch((error) => {
+            return Promise.resolve(callback()).catch((error): undefined => {
                 this.adapter.onError(name, hook, error);
                 return undefined;
             });
@@ -598,6 +644,7 @@ export class PluginLifecycleCoordinator<TData, TPlugin> {
     private resetInterrupt(record: IPluginLifecycleRecord<TData, TPlugin>) {
         record.interrupt = createInterrupt();
         record.removalDeadline = undefined;
+        record.removalDeadlineReached = false;
     }
 
     private hasPendingTeardown(record: IPluginLifecycleRecord<TData, TPlugin>) {

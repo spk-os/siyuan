@@ -1,5 +1,6 @@
 import {destroyTabsRender} from "../render/tabsRender";
 import {destroyListMindmaps} from "../render/listMindmap";
+import {destroyFoldedRender} from "./foldedRender";
 import {cancelLegacyMindmapMigration} from "../render/listMindmap/migrate";
 import {hideElements} from "../ui/hideElements";
 import {isSupportCSSHL} from "../render/searchMarkRender";
@@ -13,12 +14,21 @@ import {areProtylePluginExtensionsEnabled} from "../runtimeCapabilities";
 import {invalidateFocusFoldRequests} from "./focusFold";
 import {unregisterViewFoldContext} from "./viewFold";
 import {destroyAutoDirection} from "../render/autoDirection";
+import {destroyTableCorners} from "../render/tableCorners";
+import {disposeSyncEditorSave} from "./editorSave";
+import {destroyRelatedAVViews} from "../render/av/relatedView";
 
 export const destroy = (protyle: IProtyle) => {
     if (!protyle) {
         return;
     }
+    protyle.title?.cancelPendingInput();
+    destroyRelatedAVViews(protyle.id);
+    protyle.title?.destroy?.();
+    disposeSyncEditorSave(protyle);
+    destroyFoldedRender(protyle);
     destroyListMindmaps(protyle);
+    protyle.breadcrumb?.destroy();
     cancelLegacyMindmapMigration(protyle);
     invalidateFocusFoldRequests(protyle);
     unregisterViewFoldContext(protyle);
@@ -41,6 +51,7 @@ export const destroy = (protyle: IProtyle) => {
     protyle.element.removeAttribute("style");
     if (protyle.wysiwyg) {
         destroyAutoDirection(protyle.wysiwyg.element);
+        destroyTableCorners(protyle.wysiwyg.element);
         unregisterCustomBlockRoot(protyle.wysiwyg.element);
         destroyTabsRender(protyle.wysiwyg.element);
         protyle.wysiwyg.destroy();

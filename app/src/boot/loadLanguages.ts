@@ -1,8 +1,11 @@
-export const loadLanguages = async (lang: string, version: string, onLoaded: (languages: IObject) => void): Promise<void> => {
+import {fetchStartupRead} from "./startupRead";
+
+export const loadLanguages = async (lang: string, version: string, onLoaded: (languages: ILanguages) => void,
+                                    onError?: (error: unknown) => void): Promise<void> => {
     const url = `/appearance/langs/${lang}.json?v=${version}`;
-    let languages: IObject;
+    let languages: ILanguages;
     try {
-        const response = await fetch(url, {cache: "no-store"});
+        const response = await fetchStartupRead(url, {cache: "no-store"});
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
@@ -11,9 +14,13 @@ export const loadLanguages = async (lang: string, version: string, onLoaded: (la
             typeof (data as Record<string, unknown>).siyuanNote !== "string") {
             throw new SyntaxError("JSON");
         }
-        languages = data as IObject;
+        languages = data as ILanguages;
     } catch (error) {
         console.error(url, error);
+        if (onError) {
+            onError(error);
+            return;
+        }
         const element = document.createElement("pre");
         element.className = "language-load-error";
         element.setAttribute("role", "alert");

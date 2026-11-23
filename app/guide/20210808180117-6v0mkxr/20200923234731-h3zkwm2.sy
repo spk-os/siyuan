@@ -7,16 +7,197 @@
 		"id": "20200923234731-h3zkwm2",
 		"title": "FAQ",
 		"type": "doc",
-		"updated": "20260810212846"
+		"updated": "20261111211629"
 	},
 	"Children": [
+		{
+			"ID": "20261002224424-1kkgs4r",
+			"Type": "NodeHeading",
+			"HeadingLevel": 2,
+			"Properties": {
+				"id": "20261002224424-1kkgs4r",
+				"updated": "20261002224424"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "How do I reset settings?"
+				}
+			]
+		},
+		{
+			"ID": "20261002224424-q0ksmo0",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261002224424-q0ksmo0",
+				"updated": "20261002224424"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "Open "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Settings"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "App"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Maintenance"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Reset settings"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " to restore ordinary preferences, built-in shortcuts, menu and mobile toolbar preferences, and the current window layout in this workspace."
+				}
+			]
+		},
+		{
+			"ID": "20261002224424-0zfiohz",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261002224424-0zfiohz",
+				"updated": "20261002224424"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "Notes, assets, history, snapshots, flashcard progress and the current history retention period are preserved. Accounts, authentication, sync and encryption keys, AI/MCP connections, secrets, variables, language and network configuration are also preserved."
+				}
+			]
+		},
+		{
+			"ID": "20261002224424-p60g1r1",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261002224424-p60g1r1",
+				"updated": "20261002224424"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "Installed themes and icons remain installed, while the default appearance is selected. Plugins and code snippets, including their enabled states, plugin shortcuts and saved layouts are preserved. App-wide settings such as the update channel, accessibility, Linux input method and launch at login remain unchanged."
+				}
+			]
+		},
+		{
+			"ID": "20261002224424-veqlmu5",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261002224424-veqlmu5",
+				"updated": "20261002224424"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "All clients connected to this workspace must finish saving before the reset; if saving fails, the reset is cancelled. The clients then reload. When started from the local desktop app, the app exits after reloading; restart it to continue. Mobile and browser clients only reload."
+				}
+			]
+		},
+		{
+			"ID": "20261111211629-575ebd9",
+			"Type": "NodeHeading",
+			"HeadingLevel": 2,
+			"Properties": {
+				"id": "20261111211629-575ebd9",
+				"updated": "20261111211629"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "How do I export the system log?"
+				}
+			]
+		},
+		{
+			"ID": "20261111211629-5f194ba",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261111211629-5f194ba",
+				"updated": "20261111211629"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "In the abnormal state dialog, click "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Export system log"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " in the lower left to save a ZIP file. You can also export the log from "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Settings"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "App"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Maintenance"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "System log"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "."
+				}
+			]
+		},
 		{
 			"ID": "20210428222532-nfvnq4d",
 			"Type": "NodeHeading",
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20210428222532-nfvnq4d",
-				"updated": "20210428222834"
+				"updated": "20261024163429"
 			},
 			"Children": [
 				{
@@ -60,7 +241,7 @@
 			"ListData": {},
 			"Properties": {
 				"id": "20210428222603-moih9fe",
-				"updated": "20230622164128"
+				"updated": "20261024163429"
 			},
 			"Children": [
 				{
@@ -190,7 +371,7 @@
 					},
 					"Properties": {
 						"id": "20221202214811-2s26txl",
-						"updated": "20230622164122"
+						"updated": "20261024163429"
 					},
 					"Children": [
 						{
@@ -198,7 +379,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20221202214811-p1eevpi",
-								"updated": "20230622164122"
+								"updated": "20261024163429"
 							},
 							"Children": [
 								{
@@ -223,7 +404,7 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": ", etc."
+									"Data": ", etc"
 								}
 							]
 						}
@@ -406,7 +587,8 @@
 						"Marker": "Kg=="
 					},
 					"Properties": {
-						"id": "20210428222603-27so3jy"
+						"id": "20210428222603-27so3jy",
+						"updated": "20261016191102"
 					},
 					"Children": [
 						{
@@ -414,7 +596,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20210428222603-pwyr56t",
-								"updated": "20210512152423"
+								"updated": "20261016191102"
 							},
 							"Children": [
 								{
@@ -428,7 +610,14 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​​​​ in the notebook folder are used to save the document data, and the data format is JSON"
+									"Data": "​​​​ in the notebook folder store document data. Ordinary notebooks store document data as JSON. Encrypted notebooks store document files as ciphertext, which must not be read or edited directly as JSON. See "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "block-ref",
+									"TextMarkBlockRefID": "20260907120000-cryen01",
+									"TextMarkBlockRefSubtype": "d",
+									"TextMarkTextContent": "Encrypted Notebook"
 								}
 							]
 						}
@@ -442,7 +631,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20220808181753-3ligpvz",
-				"updated": "20260810212846"
+				"updated": "20261016191102"
 			},
 			"Children": [
 				{
@@ -510,7 +699,7 @@
 			"ListData": {},
 			"Properties": {
 				"id": "20220619172044-z4myy48",
-				"updated": "20260810212846"
+				"updated": "20261016191102"
 			},
 			"Children": [
 				{
@@ -522,7 +711,7 @@
 					},
 					"Properties": {
 						"id": "20220619172044-451fqpf",
-						"updated": "20260810212846"
+						"updated": "20261016191102"
 					},
 					"Children": [
 						{
@@ -530,7 +719,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20220619172044-bx4v3iz",
-								"updated": "20260810212846"
+								"updated": "20261016191102"
 							},
 							"Children": [
 								{
@@ -544,7 +733,7 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​​ - "
+									"Data": " - "
 								},
 								{
 									"Type": "NodeTextMark",
@@ -553,7 +742,16 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​​ - "
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Data"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
 								},
 								{
 									"Type": "NodeTextMark",
@@ -562,16 +760,39 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​ / "
+									"Data": " / "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Settings"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "App"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Data"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
 								},
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "kbd",
 									"TextMarkTextContent": "Import Data"
-								},
-								{
-									"Type": "NodeText",
-									"Data": "​​"
 								}
 							]
 						}
@@ -586,7 +807,7 @@
 					},
 					"Properties": {
 						"id": "20220619172044-r6xfdvm",
-						"updated": "20260810212846"
+						"updated": "20261016191102"
 					},
 					"Children": [
 						{
@@ -594,7 +815,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20220619172044-ccusmko",
-								"updated": "20260810212846"
+								"updated": "20261016191102"
 							},
 							"Children": [
 								{
@@ -604,11 +825,11 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "kbd",
-									"TextMarkTextContent": "Right column"
+									"TextMarkTextContent": "Settings"
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​ - "
+									"Data": " - "
 								},
 								{
 									"Type": "NodeTextMark",
@@ -617,7 +838,16 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​ - "
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Data"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
 								},
 								{
 									"Type": "NodeTextMark",
@@ -631,11 +861,34 @@
 								{
 									"Type": "NodeTextMark",
 									"TextMarkType": "kbd",
-									"TextMarkTextContent": "Import Data"
+									"TextMarkTextContent": "Settings"
 								},
 								{
 									"Type": "NodeText",
-									"Data": "​"
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "App"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Data"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Import Data"
 								}
 							]
 						}
@@ -692,7 +945,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20220909100946-x94gyft",
-				"updated": "20260803171606"
+				"updated": "20261024163013"
 			},
 			"Children": [
 				{
@@ -787,7 +1040,7 @@
 								},
 								{
 									"Type": "NodeText",
-									"Data": ", so that SiYuan will automatically download The latest version of the installation package and prompts to install"
+									"Data": ", so that SiYuan automatically downloads the latest installer and prompts you to install it. When you exit, you can open the release announcement, then choose Install now or Not now"
 								}
 							]
 						}
@@ -828,7 +1081,7 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20220909100946-9eyc3uh",
-				"updated": "20260803171606"
+				"updated": "20261024163013"
 			},
 			"Children": [
 				{
@@ -851,7 +1104,7 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​ - "
+					"Data": " - "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -860,7 +1113,7 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​ - "
+					"Data": " - "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -869,7 +1122,7 @@
 				},
 				{
 					"Type": "NodeText",
-					"Data": "​, or pay attention to "
+					"Data": ", or pay attention to "
 				},
 				{
 					"Type": "NodeTextMark",
@@ -884,17 +1137,81 @@
 			]
 		},
 		{
+			"ID": "20261109130054-ss6gsc3",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261109130054-ss6gsc3",
+				"updated": "20261109130054"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "If a document uses a file format newer than this client supports, readable titles and icons remain visible as dimmed placeholders in the document tree. Upgrade SiYuan to open or edit these documents; you can still use the expand arrow to browse their child documents."
+				}
+			]
+		},
+		{
 			"ID": "20220501231348-sx3l5qp",
 			"Type": "NodeHeading",
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20220501231348-sx3l5qp",
-				"updated": "20260809232000"
+				"updated": "20261018005815"
 			},
 			"Children": [
 				{
 					"Type": "NodeText",
 					"Data": "What if some blocks (such as paragraph blocks in list items) cannot find the block icon?"
+				}
+			]
+		},
+		{
+			"ID": "20261017212429-ykfqzzo",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261017212429-ykfqzzo",
+				"updated": "20261018005815"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "By default, block indicators are simplified. Lists with only one item retain both the list and list item indicators. To also show indicators hidden by the simplified display along the current block's first-child chain, turn on "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Settings"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Editor"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Behavior"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " - "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "kbd",
+					"TextMarkTextContent": "Show full block indicators"
+				},
+				{
+					"Type": "NodeText",
+					"Data": ". Each indicator opens the corresponding block menu and provides a drag handle."
 				}
 			]
 		},
@@ -972,7 +1289,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20260807094000-a1s2e3n",
-				"updated": "20260807094000"
+				"updated": "20261024164212"
 			},
 			"Children": [
 				{
@@ -1000,12 +1317,26 @@
 			"Type": "NodeParagraph",
 			"Properties": {
 				"id": "20260807094000-faqen02",
-				"updated": "20260807094000"
+				"updated": "20261024164212"
 			},
 			"Children": [
 				{
 					"Type": "NodeText",
-					"Data": "Determining whether an asset is completely unused requires scanning the entire workspace. Performing this check every time a reference is deleted would affect editing performance. Automatically deleting assets would also make undo and multi-device synchronization unreliable and could cause accidental data loss. Therefore, SiYuan does not automatically delete assets when content references are removed and does not provide an option to enable this behavior."
+					"Data": "Determining whether an asset is completely unused requires scanning the entire workspace. Performing this check every time a reference is deleted would affect editing performance. Automatically deleting assets would also make undo and multi-device synchronization unreliable and could cause accidental data loss."
+				}
+			]
+		},
+		{
+			"ID": "20261024164212-67csx38",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261024164212-67csx38",
+				"updated": "20261024164212"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "Therefore, SiYuan does not automatically delete assets when content references are removed and does not provide an option to enable this behavior."
 				}
 			]
 		},
@@ -1067,7 +1398,7 @@
 			"HeadingLevel": 2,
 			"Properties": {
 				"id": "20220708111435-xmj42q4",
-				"updated": "20250115163037"
+				"updated": "20261021111316"
 			},
 			"Children": [
 				{
@@ -1077,12 +1408,40 @@
 			]
 		},
 		{
+			"ID": "20261021111316-pu0s77m",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261021111316-pu0s77m",
+				"updated": "20261021111316"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "The data repo key protects snapshots and sync data. It is separate from the encrypted-notebook master password and key backups. Resetting the data repo cannot recover a lost master password or replace matching encryption key backups."
+				}
+			]
+		},
+		{
+			"ID": "20261021111316-rfqpx3c",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20261021111316-rfqpx3c",
+				"updated": "20261021111316"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "Before resetting, exit SiYuan normally and back up the complete workspace. If you have encrypted notebooks, also keep separate, matching encryption key backups and confirm that the master password works. Delete old cloud sync directories and snapshots only after the new sync completes, data is verified, and recovery materials are safely preserved."
+				}
+			]
+		},
+		{
 			"ID": "20220708111435-a2z4tpd",
 			"Type": "NodeList",
 			"ListData": {},
 			"Properties": {
 				"id": "20220708111435-a2z4tpd",
-				"updated": "20250115163037"
+				"updated": "20261021111316"
 			},
 			"Children": [
 				{
@@ -1094,7 +1453,7 @@
 					},
 					"Properties": {
 						"id": "20220708111435-kw4fp2b",
-						"updated": "20220708111614"
+						"updated": "20261021111316"
 					},
 					"Children": [
 						{
@@ -1102,7 +1461,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20220708111435-2ozs1pt",
-								"updated": "20220708111614"
+								"updated": "20261021111316"
 							},
 							"Children": [
 								{
@@ -1122,6 +1481,15 @@
 									"Type": "NodeTextMark",
 									"TextMarkType": "kbd",
 									"TextMarkTextContent": "Account & Sync"
+								},
+								{
+									"Type": "NodeText",
+									"Data": " - "
+								},
+								{
+									"Type": "NodeTextMark",
+									"TextMarkType": "kbd",
+									"TextMarkTextContent": "Data repo"
 								},
 								{
 									"Type": "NodeText",
@@ -1158,7 +1526,7 @@
 					},
 					"Properties": {
 						"id": "20220708111435-ptoqng0",
-						"updated": "20250115163037"
+						"updated": "20261021111316"
 					},
 					"Children": [
 						{
@@ -1166,7 +1534,7 @@
 							"Type": "NodeParagraph",
 							"Properties": {
 								"id": "20220708111435-vqcxyea",
-								"updated": "20220708111435"
+								"updated": "20261021111316"
 							},
 							"Children": [
 								{
@@ -1183,7 +1551,7 @@
 							},
 							"Properties": {
 								"id": "20220708111435-w2hbl28",
-								"updated": "20250115163037"
+								"updated": "20261021111316"
 							},
 							"Children": [
 								{
@@ -1197,7 +1565,7 @@
 									},
 									"Properties": {
 										"id": "20220708111435-nev43mp",
-										"updated": "20250115163037"
+										"updated": "20261021111316"
 									},
 									"Children": [
 										{
@@ -1205,30 +1573,12 @@
 											"Type": "NodeParagraph",
 											"Properties": {
 												"id": "20220708111435-zrahxh3",
-												"updated": "20250115163037"
+												"updated": "20261021111316"
 											},
 											"Children": [
 												{
 													"Type": "NodeText",
-													"Data": "Manually back up the data, you can use "
-												},
-												{
-													"Type": "NodeTextMark",
-													"TextMarkType": "kbd",
-													"TextMarkTextContent": "Export Data"
-												},
-												{
-													"Type": "NodeText",
-													"Data": "​ or directly copy the "
-												},
-												{
-													"Type": "NodeTextMark",
-													"TextMarkType": "code",
-													"TextMarkTextContent": "workspace/data/"
-												},
-												{
-													"Type": "NodeText",
-													"Data": "​ folder on the file system"
+													"Data": "Exit SiYuan normally and back up the complete workspace; for encrypted notebooks, also preserve matching encryption key backups and the master password"
 												}
 											]
 										}
@@ -1245,7 +1595,7 @@
 									},
 									"Properties": {
 										"id": "20220708111435-extloil",
-										"updated": "20220708111603"
+										"updated": "20261021111316"
 									},
 									"Children": [
 										{
@@ -1253,7 +1603,7 @@
 											"Type": "NodeParagraph",
 											"Properties": {
 												"id": "20220708111435-cjteir8",
-												"updated": "20220708111603"
+												"updated": "20261021111316"
 											},
 											"Children": [
 												{
@@ -1277,7 +1627,16 @@
 												{
 													"Type": "NodeTextMark",
 													"TextMarkType": "kbd",
-													"TextMarkTextContent": "Data rep key"
+													"TextMarkTextContent": "Data repo"
+												},
+												{
+													"Type": "NodeText",
+													"Data": " - "
+												},
+												{
+													"Type": "NodeTextMark",
+													"TextMarkType": "kbd",
+													"TextMarkTextContent": "Data repo key"
 												},
 												{
 													"Type": "NodeText",
@@ -1303,7 +1662,7 @@
 									},
 									"Properties": {
 										"id": "20220708111435-29zhnwl",
-										"updated": "20220708111456"
+										"updated": "20261021111316"
 									},
 									"Children": [
 										{
@@ -1311,7 +1670,7 @@
 											"Type": "NodeParagraph",
 											"Properties": {
 												"id": "20220708111435-pfbzbnj",
-												"updated": "20220708111456"
+												"updated": "20261021111316"
 											},
 											"Children": [
 												{
@@ -1333,7 +1692,7 @@
 									},
 									"Properties": {
 										"id": "20220708111435-rsas3a7",
-										"updated": "20220708111435"
+										"updated": "20261021111316"
 									},
 									"Children": [
 										{
@@ -1341,12 +1700,12 @@
 											"Type": "NodeParagraph",
 											"Properties": {
 												"id": "20220708111435-i8ykkah",
-												"updated": "20220708111435"
+												"updated": "20261021111316"
 											},
 											"Children": [
 												{
 													"Type": "NodeText",
-													"Data": "The cloud uses the new synchronization directory, the old synchronization directory is no longer available and can be deleted"
+													"Data": "Use a new cloud sync directory; delete the old directory only after the new sync completes, data is verified, and recovery materials are safely preserved"
 												}
 											]
 										}
@@ -1363,7 +1722,7 @@
 									},
 									"Properties": {
 										"id": "20220708111435-jjdh23m",
-										"updated": "20220708111435"
+										"updated": "20261021111316"
 									},
 									"Children": [
 										{
@@ -1371,12 +1730,12 @@
 											"Type": "NodeParagraph",
 											"Properties": {
 												"id": "20220708111435-yrc4wlj",
-												"updated": "20220708111435"
+												"updated": "20261021111316"
 											},
 											"Children": [
 												{
 													"Type": "NodeText",
-													"Data": "The existing cloud snapshots are no longer available and can be deleted"
+													"Data": "Delete old cloud snapshots only after the new sync completes, data is verified, and recovery materials are safely preserved"
 												}
 											]
 										}

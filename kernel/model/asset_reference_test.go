@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
@@ -128,6 +116,7 @@ func TestRewriteAttributeViewAssetReferences(t *testing.T) {
 			Spec: av.ValueTextRichSpec, Format: av.ValueTextRichFormatKramdown,
 			Content: strings.Join([]string{
 				"[Markdown](assets/rich.png)",
+				"![Picture](assets/picture.png)",
 				`<span data-type="a" data-href="assets/rich-text-mark.png">Text mark</span>`,
 				`<<assets/native-20200101000001-bcdefgh.pdf/20200101000002-cdefghi "PDF shorthand">>`,
 				`<span data-type="file-annotation-ref" data-id="assets/span-20200101000003-defghij.pdf/20200101000004-efghijk">PDF text mark</span>`,
@@ -169,6 +158,7 @@ func TestRewriteAttributeViewAssetReferences(t *testing.T) {
 			"assets/url.png":                           "assets/encrypted-url.png",
 			"assets/file.pdf":                          "assets/encrypted-file.pdf",
 			"assets/rich.png":                          "assets/encrypted-rich.png",
+			"assets/picture.png":                       "assets/encrypted-picture.png",
 			"assets/rich-text-mark.png":                "assets/encrypted-rich-text-mark.png",
 			"assets/native-20200101000001-bcdefgh.pdf": "assets/encrypted-native-20200101000011-lmnopqr.pdf",
 			"assets/span-20200101000003-defghij.pdf":   "assets/encrypted-span-20200101000013-nopqrst.pdf",
@@ -195,12 +185,13 @@ func TestRewriteAttributeViewAssetReferences(t *testing.T) {
 
 	wantRichAssets := []string{
 		"assets/encrypted-rich.png?box=" + targetBoxID,
+		"assets/encrypted-picture.png?box=" + targetBoxID,
 		"assets/encrypted-rich-text-mark.png?box=" + targetBoxID,
 		"assets/encrypted-native-20200101000011-lmnopqr.pdf",
 		"assets/encrypted-span-20200101000013-nopqrst.pdf",
 	}
 	assertAttributeViewRichAssets(t, richText, wantRichAssets)
-	if got, want := richText.Content, "Markdown\nText mark\nPDF shorthand\nPDF text mark\nNetwork"; got != want {
+	if got, want := richText.Content, "Markdown\nPicture\nText mark\nPDF shorthand\nPDF text mark\nNetwork"; got != want {
 		t.Fatalf("rich plain projection = %q, want %q", got, want)
 	}
 	assertAttributeViewRichAssets(t, relationRichText,

@@ -6,10 +6,10 @@ import {Protyle} from "../protyle";
 import {saveExportFile} from "../protyle/util/compatibility";
 import {disabledProtyle, onGet} from "../protyle/util/onGet";
 import {escapeAttr, escapeHtml} from "../util/escape";
-import {fetchPost} from "../util/fetch";
+import {fetchPost, fetchSyncPost} from "../util/fetch";
 import {pathPosix} from "../util/pathName";
 import {getHostCapabilities} from "../util/hostCapabilities";
-import * as dayjs from "dayjs";
+import dayjs from "dayjs";
 
 interface IRepoFile {
     fileID: string;
@@ -22,7 +22,8 @@ interface IRepoFile {
 
 let repoFileRequestId = 0;
 
-export const renderRepoFileList = (files: IRepoFile[], element: Element, showPath: boolean, showCompare = false) => {
+export const renderRepoFileList = (files: IRepoFile[], element: Element, showPath: boolean,
+                                   showCompare = false, allowRollback = true) => {
     if (files.length === 0) {
         element.innerHTML = `<li class="b3-list--empty">${window.siyuan.languages.emptyContent}</li>`;
         return;
@@ -34,9 +35,9 @@ export const renderRepoFileList = (files: IRepoFile[], element: Element, showPat
             html += `<li class="b3-list-item b3-list-item--hide-action" data-type="searchFileItem" data-id="${item.fileID}" data-snapshot="${item.indexID}" data-created="${item.updated}" data-title="${escapeAttr(escapeHtml(item.title))}">
     <div class="fn__flex-1 fn__flex-column"><span class="b3-list-item__text">${dayjs(item.updated).format("YYYY-MM-DD HH:mm:ss")}</span><span data-history-tags="${escapeAttr(item.fileID)}"></span></div>
     <span class="fn__space"></span>
-    <span class="b3-list-item__action b3-tooltips b3-tooltips__w" data-type="rollback" aria-label="${window.siyuan.languages.rollback}">
+    ${allowRollback ? `<span class="b3-list-item__action b3-tooltips b3-tooltips__w" data-type="rollback" aria-label="${window.siyuan.languages.rollback}">
         <svg><use xlink:href="#iconUndo"></use></svg>
-    </span>
+    </span>` : ""}
     <span class="b3-list-item__action b3-tooltips b3-tooltips__w${getHostCapabilities().importExport ? "" : " fn__none"}" data-type="saveAs" aria-label="${window.siyuan.languages.saveAs}">
         <svg><use xlink:href="#iconDownload"></use></svg>
     </span>
@@ -63,10 +64,10 @@ export const renderRepoFileList = (files: IRepoFile[], element: Element, showPat
                 <span class="fn__space"></span>${window.siyuan.languages.saveAs}
             </span>
             <span class="fn__space"></span>
-            <span class="b3-list-item__action" data-type="rollback">
+            ${allowRollback ? `<span class="b3-list-item__action" data-type="rollback">
                 <svg><use xlink:href="#iconUndo"></use></svg>
                 <span class="fn__space"></span> ${window.siyuan.languages.rollback}
-            </span>
+            </span>` : ""}
         </div>
     </div>
 </li>`;
@@ -83,9 +84,9 @@ export const renderRepoFileList = (files: IRepoFile[], element: Element, showPat
     <span class="b3-list-item__action b3-tooltips b3-tooltips__w${getHostCapabilities().importExport ? "" : " fn__none"}" data-type="saveAs" aria-label="${window.siyuan.languages.saveAs}">
         <svg><use xlink:href="#iconDownload"></use></svg>
     </span>
-    <span class="b3-list-item__action b3-tooltips b3-tooltips__w" data-type="rollback" aria-label="${window.siyuan.languages.rollback}">
+    ${allowRollback ? `<span class="b3-list-item__action b3-tooltips b3-tooltips__w" data-type="rollback" aria-label="${window.siyuan.languages.rollback}">
         <svg><use xlink:href="#iconUndo"></use></svg>
-    </span>
+    </span>` : ""}
 </li>`;
         /// #endif
     });
@@ -99,13 +100,16 @@ export const rollbackRepoFile = (element: Element) => {
 
     const name = element.getAttribute("data-title") || element.querySelector(".b3-list-item__text").textContent.trim();
     const time = dayjs(parseInt(element.getAttribute("data-created"))).format("YYYY-MM-DD HH:mm:ss");
-    confirmDialog("⚠️ " + window.siyuan.languages.rollback,
-        window.siyuan.languages.rollbackConfirm.replace("${name}", () => escapeHtml(name)).replace("${time}", time),
-        () => {
-            fetchPost("/api/repo/rollbackRepoSnapshotFile", {
+    confirmDialog({
+        title: "⚠️ " + window.siyuan.languages.rollback,
+        text: window.siyuan.languages.rollbackConfirm.replace("${name}", () => escapeHtml(name)).replace("${time}", time),
+        confirm: async () => {
+            const response = await fetchSyncPost("/api/repo/rollbackRepoSnapshotFile", {
                 id: element.getAttribute("data-id")
             });
-        });
+            return response.code === 0;
+        },
+    });
 };
 
 export const saveRepoFile = (element: Element) => {
@@ -120,7 +124,7 @@ export const saveRepoFile = (element: Element) => {
 };
 
 export const renderRepoFile = (app: App, element: Element, contentElement: Element,
-                               onEditor?: (editor: Protyle) => void) => {
+                               onEditor?: (editor: Protyle) => void, onTitle?: (title: string) => void) => {
     const fileId = element.getAttribute("data-id");
     const snapshotId = element.getAttribute("data-snapshot") || "";
     const requestId = (++repoFileRequestId).toString();
@@ -133,6 +137,7 @@ export const renderRepoFile = (app: App, element: Element, contentElement: Eleme
         if (!contentElement.isConnected || contentElement.getAttribute("data-request-id") !== requestId) {
             return;
         }
+        onTitle?.(response.data.title);
         const type = pathPosix().extname(response.data.content).toLowerCase();
         if (Constants.SIYUAN_ASSETS_IMAGE.concat(Constants.SIYUAN_ASSETS_AUDIO).concat(Constants.SIYUAN_ASSETS_VIDEO).includes(type)) {
             contentElement.firstElementChild.innerHTML = renderAssetsPreview(response.data.content);

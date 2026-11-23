@@ -3,6 +3,9 @@
 @use "tabs";
 @use "task";
 
+// 导出样式可使用原始方向属性，支持未执行脚本的静态内容。
+$block-rtl-selector: ".protyle-block--rtl" !default;
+
 // 任务点击保持隐藏布局，正文编辑时恢复引用块；折叠的列表项和标题保留定位内容。
 .protyle-wysiwyg[data-backlink-hide-reference]:is(:not(:focus-within), [data-backlink-task-focus]) {
   [data-backlink-reference]:not([fold="1"]):not(.li[fold="1"] *) {
@@ -23,6 +26,11 @@
       margin-right: 0 !important;
     }
   }
+}
+
+// macOS 原生拖选需要跨过换行行首的公式，复制和光标归一化由编辑器保持公式整体语义。
+.body--mac .protyle-wysiwyg[data-readonly="false"] span[data-type~="inline-math"] {
+  user-select: text;
 }
 
 .protyle-cross-block-preview {
@@ -208,11 +216,18 @@
         border-left-color: var(--b3-scroll-color);
       }
 
-      & > :is([data-node-id], [data-table-cell-node]) {
+      & > [data-node-id],
+      & > [data-table-cell-node] {
         margin-left: 34px;
       }
 
-      & > :is([data-node-id], [data-table-cell-node]):not(.p):not(.code-block) {
+      > [data-type="NodeIFrame"],
+      > [data-type="NodeWidget"] {
+        max-width: calc(100% - 34px);
+      }
+
+      & > [data-node-id]:not(.p):not(.code-block),
+      & > [data-table-cell-node]:not(.p):not(.code-block) {
         padding-right: 0;
       }
 
@@ -314,22 +329,24 @@
       }
     }
 
-    &[style*="direction: rtl"] {
-      .li > .protyle-action,
-      & > .protyle-action {
+    &#{$block-rtl-selector} {
+      .li:not([data-auto-direction]) > .protyle-action,
+      &:not([data-auto-direction]) > .protyle-action {
         right: 0;
         left: auto;
         direction: rtl;
       }
 
-      .li > :is([data-node-id], [data-table-cell-node]),
-      & > :is([data-node-id], [data-table-cell-node]) {
+      .li:not([data-auto-direction]) > [data-node-id],
+      .li:not([data-auto-direction]) > [data-table-cell-node],
+      &:not([data-auto-direction]) > [data-node-id],
+      &:not([data-auto-direction]) > [data-table-cell-node] {
         margin-right: 34px;
         margin-left: 0;
       }
 
-      .li::before,
-      &::before {
+      .li:not([data-auto-direction])::before,
+      &:not([data-auto-direction])::before {
         right: 17px;
         left: auto;
       }
@@ -349,6 +366,53 @@
       &.dragover__bottom--child::after {
         left: auto;
         right: var(--drag-line-left);
+      }
+    }
+
+    &.li[data-auto-direction] {
+      & > .protyle-action {
+        left: auto;
+        right: auto;
+        inset-inline-start: 0;
+        direction: inherit;
+      }
+
+      & > [data-node-id],
+      & > [data-table-cell-node] {
+        margin-left: 34px;
+        margin-right: 0;
+      }
+
+      &[data-auto-list-direction="rtl"] > [data-node-id],
+      &[data-auto-list-direction="rtl"] > [data-table-cell-node] {
+        margin-left: 0;
+        margin-right: 34px;
+      }
+
+      &::before {
+        left: auto;
+        right: auto;
+        inset-inline-start: 17px;
+      }
+
+      &:is(.dragover__top--sibling, .dragover__bottom--sibling, .dragover__top--child, .dragover__bottom--child) {
+        &::before {
+          left: auto;
+          right: auto;
+          inset-inline-start: calc(var(--drag-indent) / 2);
+          transform: translateX(-50%);
+        }
+
+        &[data-auto-list-direction="rtl"]::before {
+          transform: translateX(50%);
+        }
+
+        &::after {
+          left: auto;
+          right: auto;
+          inset-inline-start: var(--drag-line-left);
+          inset-inline-end: 0;
+        }
       }
     }
 
@@ -440,7 +504,7 @@
           touch-action: none;
           opacity: 0;
           margin-right: 16px;
-          background-color: var(--b3-border-color);
+          background-color: var(--b3-theme-primary-light);
           // 透明覆盖层扩展点击热区，让 4px 的细手柄也能轻松点中
           position: relative;
           z-index: 5;
@@ -496,6 +560,11 @@
         border: 1px dashed var(--b3-theme-on-surface-light);
         max-width: 100%;
         padding: 2px 4px;
+
+        & > .protyle-icons[data-entry-hidden="true"],
+        & > .protyle-wysiwyg__embed > .protyle-icons[data-entry-hidden="true"] {
+          display: none;
+        }
 
         /* 选中块的高亮覆盖 border */
         &.protyle-wysiwyg--select::after,
@@ -608,40 +677,50 @@
         height: 100%;
       }
 
-      .protyle-action__drag {
-        height: 30%;
-        width: 4px;
-        background: var(--b3-theme-surface);
-        display: none;
-        border-radius: var(--b3-border-radius);
-        cursor: col-resize;
-        transition: var(--b3-transition);
-        touch-action: none;
+      > .protyle-image-container {
+        position: relative;
+
+        > .img__name {
+          font-size: min(100%, var(--protyle-image-font-size, 100%));
+        }
+
+        > .protyle-action__title,
+        > .img__alt {
+          font-size: min(85%, var(--protyle-image-font-size, 85%));
+        }
+      }
+
+      > .protyle-image-container--compact {
+        > .protyle-icons,
+        > .img__net,
+        .protyle-block-resize[data-resize-axis="width"],
+        .protyle-block-resize[data-resize-axis="height"] {
+          display: none;
+        }
+
+        .protyle-block-resize[data-resize-axis="both"]::after {
+          width: min(5px, 100%);
+          height: min(5px, 100%);
+          right: 0;
+          bottom: 0;
+          border: 0;
+          border-radius: 50%;
+          background-color: currentColor;
+        }
+      }
+
+      .protyle-image-resize {
         position: absolute;
-        top: 35%;
-        margin-left: -8px;
-        box-shadow: 0 0 1px 1px var(--b3-theme-on-surface);
-        box-sizing: border-box;
-        z-index: 1;
+        pointer-events: none;
+        z-index: 6;
 
-        &:hover {
-          background-color: var(--b3-theme-background);
-          box-shadow: 0 0 1px 1px var(--b3-theme-on-background);
+        > .protyle-block-resize {
+          pointer-events: auto;
         }
+      }
 
-        &::before,
-        &::after {
-          position: absolute;
-          width: 4px;
-          content: "";
-          height: 100%;
-          left: -4px;
-        }
-
-        &::after {
-          left: 4px;
-          width: 8px
-        }
+      &:hover .protyle-block-resize {
+        opacity: 1;
       }
 
       &__net {
@@ -684,7 +763,14 @@
         }
       }
 
-      .protyle-action__drag {
+      &[data-type="NodeVideo"] > .iframe-content {
+        position: relative;
+        display: inline-block;
+        max-width: 100%;
+        vertical-align: bottom;
+      }
+
+      &:not([data-type="NodeIFrame"]):not([data-type="NodeWidget"]):not([data-type="NodeVideo"]) .protyle-action__drag {
         height: 32px;
         width: 4px;
         background-color: var(--b3-theme-surface);
@@ -849,7 +935,36 @@
     }
 
     &.callout {
-      height: calc(1.625em * 2.14 + 8px);
+      display: block;
+      height: auto;
+
+      > .callout-content {
+        display: none;
+      }
+    }
+
+    &.tabs {
+      display: block;
+      height: calc(1.625em + 12px);
+
+      > .tab-item,
+      > .tabs-divider {
+        display: none;
+      }
+    }
+
+    &[data-type="NodeMindmap"],
+    &[data-type="NodeList"][custom-sy-list-mindmap="1"] {
+      height: calc(1.625em + 12px);
+      max-height: calc(1.625em + 12px);
+
+      > .mindmap-view {
+        display: none;
+      }
+
+      > [data-node-id]:first-child {
+        display: block;
+      }
     }
 
     &[data-type="NodeBlockQueryEmbed"],
@@ -899,6 +1014,98 @@ body[data-format-painter] .protyle-wysiwyg[data-readonly="false"] {
   cursor: text;
 }
 
+@media screen {
+  :where(.protyle-wysiwyg[data-readonly="false"] [data-type="NodeVideo"]:not(.mindmap-view__preview-block)) > .protyle-video-resize {
+    --protyle-video-resize-gutter: 12px;
+
+    // 给满宽视频的外置把手留出操作空间。
+    padding-right: var(--protyle-video-resize-gutter);
+    box-sizing: border-box;
+  }
+
+  :where(.protyle-wysiwyg [data-type="NodeVideo"]) > .iframe-content > .protyle-block-resize[data-resize-axis="height"] {
+    // 由高度把手撑开视频下方的操作区，避免盖住播放器控件。
+    display: block;
+    position: relative;
+    left: auto;
+    margin-inline: auto;
+    transform: none;
+  }
+
+  .protyle-wysiwyg [data-type="NodeVideo"] > .iframe-content > .protyle-block-resize {
+    &[data-resize-axis="height"]::after,
+    &[data-resize-axis="both"]::after {
+      top: auto;
+      bottom: calc(100% - 5px);
+    }
+
+    &[data-resize-axis="width"] {
+      --protyle-resize-side-height: min(var(--protyle-resize-side-length), (100% - var(--protyle-resize-bottom-height)) / 2);
+
+      top: calc((100% - var(--protyle-resize-bottom-height)) / 2);
+
+      &::after {
+        left: 2px;
+        right: auto;
+      }
+    }
+
+    &[data-resize-axis="both"] {
+      right: var(--protyle-video-resize-gutter, 0px);
+      height: var(--protyle-resize-bottom-height);
+
+      &::after {
+        right: -5px;
+      }
+    }
+  }
+}
+
+@media (any-pointer: coarse) {
+  :where(.protyle-wysiwyg[data-readonly="false"] [data-type="NodeVideo"]:not(.mindmap-view__preview-block)) > .protyle-video-resize {
+    --protyle-video-resize-gutter: 20px;
+  }
+}
+
+.protyle-wysiwyg[data-readonly="true"] .iframe .protyle-block-resize,
+.protyle-wysiwyg[data-readonly="true"] [data-subtype="mermaid"] > .protyle-block-resize,
+.protyle-wysiwyg .sb > [data-subtype="mermaid"] > .protyle-block-resize {
+  display: none;
+}
+
+.protyle-wysiwyg [data-subtype="mermaid"]:hover > .protyle-block-resize {
+  opacity: 1;
+}
+
+.protyle-wysiwyg [data-subtype="mermaid"] > .protyle-block-resize {
+  --protyle-resize-side-height: min(var(--protyle-resize-side-length), 50%);
+
+  top: 50%;
+}
+
+.protyle-wysiwyg[data-readonly="true"] .protyle-image-resize,
+.protyle-wysiwyg__embed .protyle-image-resize,
+.mindmap-view__preview-block .protyle-image-resize {
+  display: none;
+}
+
+.protyle-wysiwyg[data-readonly="false"] .img .protyle-image-caption {
+  margin-top: 12px;
+}
+
+@media (any-pointer: coarse) {
+  .protyle-wysiwyg[data-readonly="false"] .img .protyle-image-caption {
+    margin-top: 20px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .protyle-wysiwyg .img:not(.img--select):not(.img--drag) .protyle-block-resize {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
 .protyle-format-painter__cursor {
   position: fixed;
   z-index: 9;
@@ -925,8 +1132,12 @@ body[data-format-painter] .protyle-wysiwyg[data-readonly="false"] {
 // 导出 html 不需要编辑样式
 .protyle-wysiwyg[data-readonly="false"] {
   &[contenteditable="true"] [data-node-id].table {
-    padding-right: 30px;
     padding-bottom: 30px;
+
+    // 增列操作空间随表格内容滚动，仅在末尾露出。
+    > div:first-child > table {
+      margin-right: 26px;
+    }
   }
 
   caption {
@@ -944,9 +1155,13 @@ body[data-format-painter] .protyle-wysiwyg[data-readonly="false"] {
   }
 
 
-  .img:hover .protyle-action__drag,
-  .iframe:hover .protyle-action__drag {
+  .img:hover .protyle-action__drag:not(.protyle-block-resize),
+  .iframe:hover .protyle-action__drag:not(.protyle-block-resize) {
     display: inline-block;
+  }
+
+  .iframe:hover .protyle-block-resize {
+    opacity: 1;
   }
 
   .code-block .protyle-action {
@@ -988,6 +1203,12 @@ body[data-format-painter] .protyle-wysiwyg[data-readonly="false"] {
 
 .protyle-wysiwyg:not([contenteditable]),
 .protyle-wysiwyg[data-readonly="true"] {
+  // 只读时仅隐藏手柄并禁用交互，保留其占位宽度，避免子块间距变化导致横向布局改变
+  .sb__resize {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
   .img:hover .protyle-icons {
     display: none;
   }
@@ -1000,12 +1221,16 @@ body[data-format-painter] .protyle-wysiwyg[data-readonly="false"] {
     .av__row--util svg[data-type="set-page-size"],
     .av__row--header > .block__icons,
     .av__views .fn__space,
-    .av__views .block__icon:not([data-type="av-search-icon"]),
+    .av__views .block__icon:not([data-type="av-search-icon"]):not(.av__readonly-sort),
     .av__widthdrag,
     .av__gallery-actions,
     .av__gallery-add,
     .av__new {
       display: none;
+    }
+
+    .av__views:not(.av__views--mobile) > .av__readonly-sort + .fn__space {
+      display: inline-block;
     }
 
     .av__row--util:not(.av__readonly--show) + .av__row--footer.av__readonly--show {

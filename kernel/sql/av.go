@@ -1,24 +1,17 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package sql
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"text/template"
@@ -29,7 +22,9 @@ import (
 	"github.com/jinzhu/copier"
 	"github.com/siyuan-note/logging"
 	"github.com/siyuan-note/siyuan/kernel/av"
+	"github.com/siyuan-note/siyuan/kernel/cache"
 	"github.com/siyuan-note/siyuan/kernel/filesys"
+	"github.com/siyuan-note/siyuan/kernel/templatehttp"
 	"github.com/siyuan-note/siyuan/kernel/treenode"
 	"github.com/siyuan-note/siyuan/kernel/util"
 )
@@ -45,12 +40,22 @@ type GroupViewRenderSource struct {
 
 // AttributeViewRenderContext 收集一次属性视图渲染期间产生的模板错误。
 type AttributeViewRenderContext struct {
+	HTTPPreview                *HTTPTemplatePreview
+	TemplateHTTP               *templatehttp.Execution
+	TemplateHTTPSourceScope    func(owner, avID, keyID, slot, content string) string
 	templateErrors             map[string]*attributeViewTemplateRenderError
 	renderingRelationTemplates bool
-	ReadOnly                   bool // 预览只允许修正内存副本，不保存缺失字段等订正结果。
+	renderingRollupTargets     map[rollupTargetID]bool
+	templateBlockStats         map[string]*util.BlockStatResult
+	templateStatsGeneration    uint64
+	templateStoredValues       map[av.Collection]map[*av.Value]*av.Value // 分页前后共享原始值副本，保持 _raw 访问语义。
+	itemScope                  bool                                      // 属性面板仅物化当前条目依赖，筛选仍使用完整目标集合。
+	ReadOnly                   bool                                      // 预览只允许修正内存副本，不保存缺失字段等订正结果。
+	HistoricalAttributeViewID  string                                    // 已认证历史源的条目及块属性取自源数据，不使用实时块索引裁剪。
 }
 
 type attributeViewTemplateRenderError struct {
+	httpTemplate      bool
 	attributeViewID   string
 	attributeViewName string
 	templateFieldID   string
@@ -64,6 +69,48 @@ type attributeViewTemplateRenderError struct {
 // NewAttributeViewRenderContext 创建属性视图渲染上下文。
 func NewAttributeViewRenderContext() *AttributeViewRenderContext {
 	return &AttributeViewRenderContext{templateErrors: map[string]*attributeViewTemplateRenderError{}}
+}
+
+func (context *AttributeViewRenderContext) statBlock(id string) *util.BlockStatResult {
+	if context == nil {
+		return filesys.StatBlock(id)
+	}
+	block := treenode.GetBlockTree(id)
+	// 加密来源逐次经过文件读取租约校验，避免锁定后复用明文统计结果。
+	if block == nil || (IsEncryptedBoxFn != nil && IsEncryptedBoxFn(block.BoxID)) {
+		return filesys.StatBlock(id)
+	}
+	// 笔记本锁定触发全局缓存清理时，统计中包含的数据库内容也需重新读取。
+	generation := cache.GetAVCacheGeneration()
+	if context.templateStatsGeneration != generation {
+		context.templateBlockStats = nil
+		context.templateStatsGeneration = generation
+	}
+	key := block.BoxID + "\x00" + id
+	if result := context.templateBlockStats[key]; result != nil {
+		return result
+	}
+	result := filesys.StatBlock(id)
+	if result != nil {
+		if context.templateBlockStats == nil {
+			context.templateBlockStats = map[string]*util.BlockStatResult{}
+		}
+		context.templateBlockStats[key] = result
+	}
+	return result
+}
+
+// HasTemplateErrors 判断本次求值是否产生模板错误，错误结果不参与跨请求复用。
+func (context *AttributeViewRenderContext) HasTemplateErrors() bool {
+	return context != nil && len(context.templateErrors) != 0
+}
+
+// HTTPTemplateError 仅将取消、锁定和执行预算终止提升为整个渲染失败。
+func (context *AttributeViewRenderContext) HTTPTemplateError() error {
+	if context == nil || context.TemplateHTTP == nil {
+		return nil
+	}
+	return context.TemplateHTTP.Err()
 }
 
 func (context *AttributeViewRenderContext) addTemplateError(attrView *av.AttributeView, templateKey *av.Key,
@@ -85,6 +132,7 @@ func (context *AttributeViewRenderContext) addTemplateError(attrView *av.Attribu
 	templateErr := context.templateErrors[errorKey]
 	if nil == templateErr {
 		templateErr = &attributeViewTemplateRenderError{
+			httpTemplate:      strings.Contains(templateKey.Template, "httpGet") || strings.Contains(templateKey.RenderTemplate, "httpGet"),
 			attributeViewID:   attrView.ID,
 			attributeViewName: getAttrViewName(attrView),
 			templateFieldID:   templateKey.ID,
@@ -122,7 +170,15 @@ func (context *AttributeViewRenderContext) sortedTemplateErrors() (ret []*attrib
 }
 
 func (context *AttributeViewRenderContext) PushTemplateErrors() {
+	if context != nil && context.TemplateHTTP != nil && context.TemplateHTTP.Err() != nil {
+		return
+	}
 	for _, templateErr := range context.sortedTemplateErrors() {
+		// 联网模板的错误留在本次执行内，避免向其他窗口广播数据范围信息。
+		if context.TemplateHTTP != nil && templateErr.httpTemplate {
+			context.TemplateHTTP.ReportTemplateError()
+			continue
+		}
 		detail := fmt.Sprintf(util.Langs[util.Lang][374], templateErr.attributeViewName, templateErr.templateFieldName,
 			templateErr.itemName, templateErr.itemID, len(templateErr.itemIDs), templateErr.renderErr)
 		util.PushErrMsg(fmt.Sprintf(util.Langs[util.Lang][44], util.EscapeHTML(detail)), 30000)
@@ -175,6 +231,9 @@ func RenderGroupViewWithSource(attrView *av.AttributeView, view, groupView *av.V
 // RenderGroupViewWithSourceContext 使用指定的渲染上下文渲染分组视图。
 func RenderGroupViewWithSourceContext(attrView *av.AttributeView, view, groupView *av.View, query string,
 	source *GroupViewRenderSource, ignoreRows bool, context *AttributeViewRenderContext) (ret av.Viewable) {
+	if base, groupBase := view.GetBaseLayout(), groupView.GetBaseLayout(); base != nil && groupBase != nil {
+		groupBase.ShowRelationIcon = new(base.EffectiveShowRelationIcon())
+	}
 	var err error
 	switch groupView.LayoutType {
 	case av.LayoutTypeTable, av.LayoutTypeList, av.LayoutTypeCalendar:
@@ -272,6 +331,14 @@ func RenderViewWithContext(attrView *av.AttributeView, view *av.View, query stri
 func RenderViewWithDeferredTemplatesContext(attrView *av.AttributeView, view *av.View, query string, ignoreRows bool,
 	renderContext *AttributeViewRenderContext) (ret av.Viewable) {
 	ret = renderViewWithContext(attrView, view, query, ignoreRows, true, renderContext)
+	if !ignoreRows && strings.TrimSpace(query) == "" {
+		if collection, ok := ret.(av.Collection); ok {
+			clearAttributeViewRenderedContents(collection, nil)
+			if renderContext != nil {
+				delete(renderContext.templateStoredValues, collection)
+			}
+		}
+	}
 	return
 }
 
@@ -288,7 +355,7 @@ func renderViewWithContext(attrView *av.AttributeView, view *av.View, query stri
 	renderedAttrViews[attrView.ID] = attrView
 	ret = renderView(attrView, view, query, &depth, renderedAttrViews, ignoreRows, deferTemplateValues, renderContext)
 
-	// 元数据、延迟模板和日历区间渲染不写入缓存，避免后续全集渲染读取到不完整条目。
+	// 元数据、延迟模板和日历渲染不写入缓存，避免后续渲染读取已裁剪的条目。
 	if !ignoreRows && !deferTemplateValues && view.LayoutType != av.LayoutTypeCalendar {
 		attrView.RenderedViewables[ret.GetID()] = ret
 	}
@@ -327,21 +394,32 @@ func renderView(attrView *av.AttributeView, view *av.View, query string, depth *
 }
 
 // compileTemplateField 解析模板内容并返回可复用的已编译模板，避免在逐行渲染时反复解析。
-func compileTemplateField(tplContent string) (tpl *template.Template, err error) {
+func compileTemplateField(tplContent string, functions ...template.FuncMap) (tpl *template.Template, err error) {
 	goTpl := template.New("").Delims(".action{", "}")
 	tplFuncMap := filesys.BuiltInTemplateFuncs()
 	SQLTemplateFuncs(&tplFuncMap)
+	for _, funcs := range functions {
+		maps.Copy(tplFuncMap, funcs)
+	}
 	goTpl = goTpl.Funcs(tplFuncMap)
 	tpl, err = goTpl.Parse(tplContent)
 	if err != nil {
-		logging.LogWarnf("parse template [%s] failed: %s", tplContent, err)
+		if strings.Contains(tplContent, "httpGet") {
+			err = errors.New("HTTP template parsing failed")
+		}
+		logging.LogWarnf("parse attribute view template failed")
 		return
 	}
 	return
 }
 
 func executeTemplateField(tpl *template.Template, ial map[string]string, keyValues []*av.KeyValues,
-	storedValueCache map[*av.Value]*av.Value) (ret string, err error) {
+	storedValueCache map[*av.Value]*av.Value, executions ...*templatehttp.Execution) (ret string, err error) {
+	return executeTemplateData(tpl, templateFieldData(ial, keyValues, storedValueCache), executions...)
+}
+
+func templateFieldData(ial map[string]string, keyValues []*av.KeyValues,
+	storedValueCache map[*av.Value]*av.Value) map[string]any {
 	if "" == ial["id"] {
 		block := getBlockValue(keyValues)
 		if nil != block {
@@ -360,7 +438,6 @@ func executeTemplateField(tpl *template.Template, ial map[string]string, keyValu
 		}
 	}
 
-	buf := &bytes.Buffer{}
 	dataModel := map[string]any{} // 复制一份 IAL 以避免修改原始数据
 	for k, v := range ial {
 		dataModel[k] = v
@@ -485,7 +562,17 @@ func executeTemplateField(tpl *template.Template, ial map[string]string, keyValu
 		dataModel["id_mod_raw"].(map[string]any)[keyValue.Key.ID] = rawValue
 	}
 
-	if err = tpl.Execute(buf, dataModel); err != nil {
+	return dataModel
+}
+
+func executeTemplateData(tpl *template.Template, dataModel map[string]any,
+	executions ...*templatehttp.Execution) (ret string, err error) {
+	buf := &bytes.Buffer{}
+	var writer io.Writer = buf
+	if len(executions) > 0 && executions[0] != nil {
+		writer = executions[0].Writer(buf)
+	}
+	if err = tpl.Execute(writer, dataModel); err != nil {
 		return
 	}
 	ret = buf.String()
@@ -502,8 +589,18 @@ func executeTemplateField(tpl *template.Template, ial map[string]string, keyValu
 
 func generateAttrViewItems(attrView *av.AttributeView, view *av.View) (ret map[string][]*av.KeyValues) {
 	ret = map[string][]*av.KeyValues{}
+	var included map[string]bool
+	if view.GroupItemIDs != nil {
+		included = make(map[string]bool, len(view.GroupItemIDs))
+		for _, id := range view.GroupItemIDs {
+			included[id] = true
+		}
+	}
 	for _, keyValues := range attrView.KeyValues {
 		for _, val := range keyValues.Values {
+			if included != nil && !included[val.BlockID] {
+				continue
+			}
 			values := ret[val.BlockID]
 			if nil == values {
 				values = []*av.KeyValues{{Key: keyValues.Key, Values: []*av.Value{val}}}
@@ -606,9 +703,7 @@ func fillAttributeViewBlockRefSubtypes(attrView *av.AttributeView, attrs map[str
 			addedBlockIDs[value.Block.ID] = true
 		}
 	}
-	for blockID, blockAttrs := range BatchGetBlockAttrs(missingBlockIDs) {
-		attrs[blockID] = blockAttrs
-	}
+	maps.Copy(attrs, BatchGetBlockAttrs(missingBlockIDs))
 	for _, value := range blockValues.Values {
 		if nil == value || nil == value.Block {
 			continue
@@ -622,7 +717,9 @@ func fillAttributeViewAutoGeneratedValues(attrView *av.AttributeView, collection
 	ials map[string]map[string]string, depth *int, cachedAttrViews map[string]*av.AttributeView,
 	renderContext *AttributeViewRenderContext) {
 	// 渲染主键、创建时间、更新时间
-	ials = fillAttributeViewBlockRefSubtypes(attrView, ials)
+	if renderContext.HistoricalAttributeViewID == "" || renderContext.HistoricalAttributeViewID != attrView.ID {
+		ials = fillAttributeViewBlockRefSubtypes(attrView, ials)
+	}
 
 	for _, item := range collection.GetItems() {
 		for _, value := range item.GetValues() {
@@ -630,7 +727,7 @@ func fillAttributeViewAutoGeneratedValues(attrView *av.AttributeView, collection
 
 			switch value.Type {
 			case av.KeyTypeBlock: // 对于主键可能需要填充静态锚文本 Database-bound block primary key supports setting static anchor text https://github.com/siyuan-note/siyuan/issues/10049
-				if nil != value.Block && av.BlockRefSubtypeStatic == value.Block.RefSubtype {
+				if nil != value.Block && value.Block.Rich == nil && av.BlockRefSubtypeStatic == value.Block.RefSubtype {
 					if staticText := ials[value.Block.ID][av.NodeAttrViewStaticText+"-"+attrView.ID]; "" != staticText {
 						value.Block.Content = staticText
 					}
@@ -655,7 +752,11 @@ func fillAttributeViewAutoGeneratedValues(attrView *av.AttributeView, collection
 					ial = map[string]string{}
 				}
 				id := itemID
-				if "" != ial["id"] {
+				if renderContext.HistoricalAttributeViewID != "" && renderContext.HistoricalAttributeViewID == attrView.ID &&
+					block != nil && !block.IsDetached && block.Block != nil && ast.IsNodeIDPattern(block.Block.ID) {
+					// 历史绑定条目的创建时间来自源块身份，不能用入库条目身份代替。
+					id = block.Block.ID
+				} else if "" != ial["id"] {
 					id = ial["id"]
 				}
 				createdStr := id[:len("20060102150405")]
@@ -782,8 +883,18 @@ func fillAttributeViewAutoGeneratedValues(attrView *av.AttributeView, collection
 
 		isSameAv := destAv.ID == attrView.ID
 		var furtherCollection av.Collection
-		if av.KeyTypeTemplate == destKey.Type || (!isSameAv && (av.KeyTypeUpdated == destKey.Type || av.KeyTypeCreated == destKey.Type || av.KeyTypeRelation == destKey.Type)) {
-			viewable := renderView(destAv, destAv.Views[0], "", depth, cachedAttrViews, false, false, renderContext)
+		var relatedItemIDs []string
+		if renderContext.itemScope {
+			relatedItemIDs = attributeViewRelatedItemIDs(attrView, collection, relKey.ID)
+		}
+		if av.KeyTypeRollup == destKey.Type {
+			furtherCollection = renderRollupTargetForItems(destAv, destKey, depth, cachedAttrViews, renderContext, relatedItemIDs)
+		} else if av.NeedsRollupTargetRender(destKey.Type, isSameAv) {
+			targetView := destAv.Views[0]
+			if relatedItemIDs != nil {
+				targetView = attributeViewItemScope(targetView, relatedItemIDs)
+			}
+			viewable := renderView(destAv, targetView, "", depth, cachedAttrViews, false, false, renderContext)
 			if nil != viewable {
 				furtherCollection = viewable.(av.Collection)
 			} else {
@@ -793,7 +904,8 @@ func fillAttributeViewAutoGeneratedValues(attrView *av.AttributeView, collection
 		}
 		context := &av.RollupRenderContext{FurtherCollection: furtherCollection}
 		if hasFilterConditions(rollupKey.Rollup.Filters) {
-			context.EligibleItemIDs = filterAttributeViewItemIDs(destAv, rollupKey.Rollup.Filters, depth,
+			filterDepth := *depth
+			context.EligibleItemIDs = filterAttributeViewItemIDs(destAv, rollupKey.Rollup.Filters, &filterDepth,
 				cachedAttrViews, renderContext)
 		}
 		rollupRenderContexts[rollupKey.ID] = context
@@ -855,10 +967,18 @@ func hasFilterConditions(filters []*av.ViewFilter) bool {
 // loadRelatedAttributeView 为历史和仓库快照渲染绑定请求级调色板，同时保持关联数据库的字段和值来源不变。
 func loadRelatedAttributeView(source *av.AttributeView, avID string, cachedAttrViews map[string]*av.AttributeView) (ret *av.AttributeView) {
 	if ret = cachedAttrViews[avID]; nil != ret {
-		return
+		if boxID, scoped := source.StorageContext(); !scoped {
+			return
+		} else if cachedBoxID, pinned := ret.StorageContext(); pinned && cachedBoxID == boxID {
+			return
+		}
 	}
 
-	ret, _ = av.ParseAttributeView(avID)
+	if boxID, scoped := source.StorageContext(); scoped {
+		ret, _ = av.ParseAttributeViewWithStorageContext(avID, boxID)
+	} else {
+		ret, _ = av.ParseAttributeView(avID)
+	}
 	if nil == ret {
 		return
 	}
@@ -945,7 +1065,9 @@ func getFurtherCollections(attrView *av.AttributeView, cachedAttrViews map[strin
 		isSameAv := destAv.ID == attrView.ID
 
 		var furtherCollection av.Collection
-		if av.KeyTypeTemplate == destKey.Type || (!isSameAv && (av.KeyTypeUpdated == destKey.Type || av.KeyTypeCreated == destKey.Type || av.KeyTypeRelation == destKey.Type)) {
+		if av.KeyTypeRollup == destKey.Type {
+			furtherCollection = renderRollupTarget(destAv, destKey, depth, cachedAttrViews, renderContext)
+		} else if av.NeedsRollupTargetRender(destKey.Type, isSameAv) {
 			viewable := renderView(destAv, destAv.Views[0], "", depth, cachedAttrViews, false, false, renderContext)
 			if nil != viewable {
 				furtherCollection = viewable.(av.Collection)
@@ -953,7 +1075,8 @@ func getFurtherCollections(attrView *av.AttributeView, cachedAttrViews map[strin
 		}
 		context := &av.RollupRenderContext{FurtherCollection: furtherCollection}
 		if hasFilterConditions(kv.Key.Rollup.Filters) {
-			context.EligibleItemIDs = filterAttributeViewItemIDs(destAv, kv.Key.Rollup.Filters, depth,
+			filterDepth := *depth
+			context.EligibleItemIDs = filterAttributeViewItemIDs(destAv, kv.Key.Rollup.Filters, &filterDepth,
 				cachedAttrViews, renderContext)
 		}
 		ret[kv.Key.ID] = context
@@ -979,19 +1102,49 @@ func GetFurtherCollectionsWithContext(attrView *av.AttributeView, cachedAttrView
 // FillAttributeViewTemplateValuesWithContext 计算集合中当前条目的模板字段值和显示模板结果。
 func FillAttributeViewTemplateValuesWithContext(attrView *av.AttributeView, view *av.View, collection av.Collection,
 	renderContext *AttributeViewRenderContext) {
+	FillAttributeViewTemplateValuesForKeysWithContext(attrView, view, collection, nil, renderContext)
+}
+
+// FillAttributeViewTemplateValuesForKeysWithContext 只求值指定字段，保留其他字段已计算的显示结果。
+// keys 为 nil 时求值全部模板，非 nil 的空集合不执行模板。
+func FillAttributeViewTemplateValuesForKeysWithContext(attrView *av.AttributeView, view *av.View, collection av.Collection,
+	keys map[string]bool, renderContext *AttributeViewRenderContext) {
+	if keys != nil && len(keys) == 0 {
+		return
+	}
 	var ialIDs []string
+	historical := renderContext != nil && renderContext.HistoricalAttributeViewID != "" && renderContext.HistoricalAttributeViewID == attrView.ID
 	for _, item := range collection.GetItems() {
 		blockValue := item.GetBlockValue()
-		if nil == blockValue || nil == blockValue.Block || blockValue.IsDetached {
+		if historical || nil == blockValue || nil == blockValue.Block || blockValue.IsDetached {
 			continue
 		}
 		ialIDs = append(ialIDs, blockValue.Block.ID)
 	}
-	fillAttributeViewTemplateValues(attrView, view, collection, BatchGetBlockAttrs(ialIDs), renderContext)
+	fillAttributeViewTemplateValuesForKeys(attrView, view, collection, BatchGetBlockAttrs(ialIDs), renderContext, keys)
 }
 
 func fillAttributeViewTemplateValues(attrView *av.AttributeView, view *av.View, collection av.Collection,
 	ials map[string]map[string]string, renderContext *AttributeViewRenderContext) {
+	fillAttributeViewTemplateValuesForKeys(attrView, view, collection, ials, renderContext, nil)
+}
+
+func clearAttributeViewRenderedContents(collection av.Collection, keys map[string]bool) {
+	for _, item := range collection.GetItems() {
+		for _, value := range item.GetValues() {
+			if value != nil && (keys == nil || keys[value.KeyID]) {
+				value.RenderedContent = ""
+				value.HasRenderTemplate = false
+			}
+		}
+	}
+}
+
+func fillAttributeViewTemplateValuesForKeys(attrView *av.AttributeView, view *av.View, collection av.Collection,
+	ials map[string]map[string]string, renderContext *AttributeViewRenderContext, keys map[string]bool) {
+	timing := util.BeginPerformance("database.templates")
+	var evaluated int64
+	defer func() { timing.Count("values", evaluated); timing.Finish() }()
 	items := generateAttrViewItems(attrView, view)
 	existTemplateField := false
 	for _, kVals := range attrView.KeyValues {
@@ -1000,34 +1153,75 @@ func fillAttributeViewTemplateValues(attrView *av.AttributeView, view *av.View, 
 			break
 		}
 	}
-	for _, item := range collection.GetItems() {
-		for _, value := range item.GetValues() {
-			if nil != value {
-				value.RenderedContent = ""
-				value.HasRenderTemplate = false
+	clearAttributeViewRenderedContents(collection, keys)
+	if renderContext != nil && renderContext.HTTPPreview.Prepare(attrView) {
+		for _, item := range collection.GetItems() {
+			for _, value := range item.GetValues() {
+				if value.Template != nil {
+					value.Template.Content = ""
+				}
 			}
 		}
+		return
 	}
 	if !existTemplateField {
 		return
 	}
 
 	templateKeys, _ := GetTemplateKeysByResolutionOrder(attrView)
-	// 按模板内容缓存已编译模板，避免逐行重复 Parse。坏内容缓存为 nil，保留原先「逐行设置 err 并继续」的语义。
+	// 按模板内容缓存已编译模板，避免逐行重复 Parse。坏内容缓存为 nil，逐行设置 err 并继续渲染其余行。
 	tplCache := map[string]*template.Template{}
 	compileErrCache := map[string]error{}
+	templateFuncs := template.FuncMap{"statBlock": renderContext.statBlock}
 	storedValueCache := map[*av.Value]*av.Value{}
+	if keys != nil && renderContext != nil {
+		if renderContext.templateStoredValues == nil {
+			renderContext.templateStoredValues = map[av.Collection]map[*av.Value]*av.Value{}
+		}
+		storedValueCache = renderContext.templateStoredValues[collection]
+		if storedValueCache == nil {
+			storedValueCache = map[*av.Value]*av.Value{}
+			renderContext.templateStoredValues[collection] = storedValueCache
+		}
+	}
+	timing.Stage("evaluate")
 	for _, templateKey := range templateKeys {
+		if keys != nil && !keys[templateKey.ID] {
+			continue
+		}
 		templateContent := templateKey.Template
 		isRenderTemplate := av.KeyTypeTemplate != templateKey.Type
 		if isRenderTemplate {
 			templateContent = templateKey.RenderTemplate
 		}
+		slot := "template"
+		if isRenderTemplate {
+			slot = "renderTemplate"
+		}
+		cacheKey := templateContent
+		var httpFuncs template.FuncMap
+		var httpScope string
+		if renderContext != nil && renderContext.TemplateHTTP != nil {
+			// 字段及模板槽位各自绑定来源，避免相同源码复用其他字段的许可闭包。
+			owner := av.GetAVBoxID(attrView.ID)
+			scope := owner + "\x00" + attrView.ID + "\x00" + templateKey.ID + "\x00" + slot
+			scope += fmt.Sprintf("\x00%x", sha256.Sum256([]byte(templateContent)))
+			if renderContext.TemplateHTTPSourceScope != nil && strings.Contains(templateContent, "httpGet") {
+				scope = renderContext.TemplateHTTPSourceScope(owner, attrView.ID, templateKey.ID, slot, templateContent)
+			}
+			httpFuncs = renderContext.TemplateHTTP.DatabaseFuncs(scope)
+			httpScope = scope
+			cacheKey = templateKey.ID + "\x00" + slot + "\x00" + templateContent
+		}
 		for _, item := range collection.GetItems() {
+			if renderContext != nil && renderContext.TemplateHTTP != nil && renderContext.TemplateHTTP.Err() != nil {
+				return
+			}
 			value := item.GetValue(templateKey.ID)
 			if nil == value || (!isRenderTemplate && nil == value.Template) {
 				continue
 			}
+			evaluated++
 
 			keyValues := items[item.GetID()]
 			var ial map[string]string
@@ -1041,21 +1235,46 @@ func fillAttributeViewTemplateValues(attrView *av.AttributeView, view *av.View, 
 
 			var content string
 			var renderErr error
-			tpl, tried := tplCache[templateContent]
+			tpl, tried := tplCache[cacheKey]
 			if !tried {
-				compiled, compileErr := compileTemplateField(templateContent)
-				tplCache[templateContent] = compiled // 坏内容时 compiled 为 nil，仍写入缓存
+				compiled, compileErr := compileTemplateField(templateContent, templateFuncs, httpFuncs)
+				tplCache[cacheKey] = compiled // 坏内容时 compiled 为 nil，仍写入缓存
 				if nil != compileErr {
-					compileErrCache[templateContent] = compileErr
+					compileErrCache[cacheKey] = compileErr
 					renderErr = compileErr
 				} else {
 					tpl = compiled
 				}
 			} else if nil == tpl {
-				renderErr = compileErrCache[templateContent] // 复用首次解析的错误
+				renderErr = compileErrCache[cacheKey] // 复用首次解析的错误
 			}
 			if nil == renderErr {
-				content, renderErr = executeTemplateField(tpl, ial, keyValues, storedValueCache)
+				var execution *templatehttp.Execution
+				if renderContext != nil {
+					execution = renderContext.TemplateHTTP
+				}
+				data := templateFieldData(ial, keyValues, storedValueCache)
+				inputs, cacheable := "", false
+				if execution != nil {
+					inputs, cacheable = templateInputSignature(tpl, data)
+				}
+				snapshot := inputs != ""
+				inputs = httpScope + "\x00" + templateContent + "\x00" + inputs
+				identity := av.GetAVBoxID(attrView.ID) + "\x00" + attrView.ID + "\x00" + templateKey.ID + "\x00" + slot + "\x00" + item.GetID()
+				var reused bool
+				if execution != nil && snapshot && (cacheable || execution.PreserveHTTPResults()) {
+					content, reused = execution.CachedTemplate(httpScope, identity, inputs)
+				}
+				if !reused {
+					content, renderErr = executeTemplateData(tpl, data, execution)
+					if execution != nil && snapshot && renderErr == nil {
+						execution.StoreTemplate(httpScope, identity, inputs, content)
+					}
+				}
+			}
+			if renderErr != nil && strings.Contains(templateContent, "httpGet") {
+				renderErr = errors.New("template_error")
+				content = renderErr.Error()
 			}
 			if nil != renderErr {
 				renderContext.addTemplateError(attrView, templateKey, item, renderErr)
@@ -1086,7 +1305,7 @@ func fillAttributeViewKeyValues(attrView *av.AttributeView, collection av.Collec
 			logging.LogWarnf("attribute view [%s] key [%s] not found while filling values", attrView.ID, keyID)
 			continue
 		}
-		if av.KeyTypeTemplate == keyValues.Key.Type || av.KeyTypeCreated == keyValues.Key.Type || av.KeyTypeUpdated == keyValues.Key.Type {
+		if av.HasKeyGroup(keyValues.Key.Type, av.KeyGroupRenderAutoFill) {
 			renderedBlockIDs := map[string]bool{}
 			for _, val := range values {
 				val.IsRenderAutoFill = true
@@ -1147,6 +1366,10 @@ func FillAttributeViewNilValue(value *av.Value, typ av.KeyType) {
 	case av.KeyTypeEmail:
 		if nil == value.Email {
 			value.Email = &av.ValueEmail{}
+		}
+	case av.KeyTypeLocation:
+		if nil == value.Location {
+			value.Location = &av.ValueLocation{}
 		}
 	case av.KeyTypePhone:
 		if nil == value.Phone {
@@ -1257,7 +1480,7 @@ func filterByQuery(query string, collection av.Collection) {
 			for _, cell := range item.GetValues() {
 				allKeywordsHit := true
 				for _, keyword := range keywords {
-					if !util.SearchCaseSensitive {
+					if !util.SearchCaseSensitive.Load() {
 						if !strings.Contains(strings.ToLower(cell.String(true)), strings.ToLower(keyword)) {
 							allKeywordsHit = false
 							break
@@ -1380,13 +1603,7 @@ func GetTemplateKeyRelevantKeys(attrView *av.AttributeView, templateKey *av.Key)
 	if nil != err {
 		return
 	}
-	dynamicDependency := false
-	for _, variable := range vars {
-		if dynamicTemplateKeyVar == variable {
-			dynamicDependency = true
-			break
-		}
-	}
+	dynamicDependency := slices.Contains(vars, dynamicTemplateKeyVar)
 	if dynamicDependency {
 		for _, keyValues := range attrView.KeyValues {
 			if nil != keyValues && nil != keyValues.Key {
@@ -1440,7 +1657,9 @@ func getTemplateVars(tplContent string) ([]string, error) {
 		return nil, parseErr
 	}
 	vars := make(map[string]struct{})
-	collectVars(tpl.Tree.Root, vars)
+	for _, definition := range tpl.Templates() {
+		collectVars(definition.Tree.Root, vars)
+	}
 	var result []string
 	for v := range vars {
 		result = append(result, v)
@@ -1456,8 +1675,14 @@ func isTemplateIDModField(node parse.Node) bool {
 }
 
 func collectVars(node parse.Node, vars map[string]struct{}) {
+	if node == nil {
+		return
+	}
 	switch n := node.(type) {
 	case *parse.ListNode:
+		if n == nil {
+			return
+		}
 		for _, child := range n.Nodes {
 			collectVars(child, vars)
 		}
@@ -1504,7 +1729,27 @@ func collectVars(node parse.Node, vars map[string]struct{}) {
 		}
 	case *parse.VariableNode:
 		if len(n.Ident) > 0 {
-			vars[n.Ident[0]] = struct{}{}
+			if n.Ident[0] == "$" && len(n.Ident) > 1 {
+				collectVars(&parse.FieldNode{Ident: n.Ident[1:]}, vars)
+			} else {
+				vars[n.Ident[0]] = struct{}{}
+			}
 		}
+	case *parse.IfNode:
+		collectVars(n.Pipe, vars)
+		collectVars(n.List, vars)
+		collectVars(n.ElseList, vars)
+	case *parse.WithNode:
+		collectVars(n.Pipe, vars)
+		collectVars(n.List, vars)
+		collectVars(n.ElseList, vars)
+	case *parse.RangeNode:
+		collectVars(n.Pipe, vars)
+		collectVars(n.List, vars)
+		collectVars(n.ElseList, vars)
+	case *parse.ChainNode:
+		collectVars(n.Node, vars)
+	case *parse.TemplateNode:
+		collectVars(n.Pipe, vars)
 	}
 }

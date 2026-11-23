@@ -1,10 +1,7 @@
+import {confirmDialog} from "../../dialog/confirmDialog";
 import {showMessage} from "../../dialog/message";
 import {openPluginPublishData} from "./pluginPublish";
 import {fetchPost} from "../../util/fetch";
-import {confirmDialog} from "../../dialog/confirmDialog";
-/// #if !BROWSER
-import * as path from "path";
-/// #endif
 import {getFrontend, isMobile} from "../../util/functions";
 import {setStorageVal, writeText} from "../../protyle/util/compatibility";
 import {hasClosestByAttribute, hasClosestByClassName} from "../../protyle/util/hasClosest";
@@ -12,10 +9,11 @@ import {Plugin} from "../../plugin";
 import type {App} from "../../index";
 import {escapeHtml} from "../../util/escape";
 import {setGlobalPluginsDisabled} from "../../plugin/globalState";
-import {useShell} from "../../util/pathName";
+import {openBazaarPath} from "./openPath";
 import {previewImages} from "../../protyle/preview/image";
-import {isBazaarPackageRatingEditable, sortBazaarPackages} from "../../util/bazaarPackage";
+import {isBazaarPackageEnableDisabled, isBazaarPackageRatingEditable, sortBazaarPackages} from "../../util/bazaarPackage";
 import {Constants} from "../../constants";
+import {bindBazaarFilterMenu} from "./filterMenu";
 import {
     BAZAAR_PACKAGE_CONFIG,
     getBazaarTypeByMyType,
@@ -23,6 +21,18 @@ import {
     isBazaarPackageType,
 } from "./packageConfig";
 import {openRatingDialog, refreshVisibleRatingUI, syncRatingUser} from "./rating";
+import {getSettingsWindowHost} from "../setting/windowContext";
+import {
+    beginBazaarInstall,
+    beginBazaarBatchUpdate,
+    cancelBazaarInstall,
+    cancelBazaarBatchUpdate,
+    finishBazaarInstall,
+    finishBazaarBatchUpdate,
+    getBazaarInstallTask,
+    getBazaarBatchUpdate,
+    renderBazaarInstall,
+} from "./installTask";
 
 type TBazaarController = typeof import("../bazaar").bazaar;
 type TBazaarPackageSource = "downloaded" | "updated" | "bazaar";
@@ -84,6 +94,10 @@ const handleDownloadedTab: TBazaarActionHandler = (context, target) => {
 };
 
 const ACTION_HANDLERS = {
+    "skip-batch-update": (({controller, pkgType, packageName}, target) => {
+        if (pkgType && packageName) void controller._toggleBatchUpdatePreference(pkgType, packageName, target);
+        return HANDLED;
+    }) satisfies TBazaarActionHandler,
     "rate-package": ((context) => {
         const {controller, packageSource, packageName, pkgType, installedItem, pkgItem} = context;
         const packageInstalled = Boolean(installedItem) ||
@@ -123,9 +137,7 @@ const ACTION_HANDLERS = {
             return CONTINUE;
         }
         const item = installedItem || pkgItem;
-        /// #if !BROWSER
-        useShell("openPath", path.join(window.siyuan.config.system.dataDir, pkgType, item.name));
-        /// #endif
+        openBazaarPath(pkgType, item.name);
         return HANDLED;
     }) satisfies TBazaarActionHandler,
     "open-storage": ((context) => {
@@ -134,9 +146,7 @@ const ACTION_HANDLERS = {
         if (!item || pkgType !== "plugins" || !item.hasStorageData) {
             return CONTINUE;
         }
-        /// #if !BROWSER
-        useShell("openPath", path.join(window.siyuan.config.system.dataDir, "storage", "petal", item.name));
-        /// #endif
+        openBazaarPath(pkgType, item.name, true);
         return HANDLED;
     }) satisfies TBazaarActionHandler,
     "retry-update": ((context) => {
@@ -150,11 +160,21 @@ const ACTION_HANDLERS = {
     install: ((context, target) => {
         const {controller, app, mount, availableItem, pkgItem, pkgType} = context;
         const installItem = availableItem || pkgItem;
+        if (installItem && pkgType && getBazaarInstallTask(pkgType, installItem.name)) {
+            cancelBazaarInstall(pkgType, installItem.name);
+            renderBazaarInstall(mount.element);
+            return HANDLED;
+        }
         if (target.classList.contains("b3-button--progress") || target.hasAttribute("disabled") ||
             !installItem || !pkgType) {
             return HANDLED;
         }
         const themeAppearanceMode = pkgType === "themes" ? controller._resolveThemeAppearanceMode(installItem) : {};
+        const task = beginBazaarInstall(pkgType, installItem.name, installItem.repoURL);
+        if (!task) {
+            return HANDLED;
+        }
+        renderBazaarInstall(mount.element);
         const request = controller._beginBazaarRequest(pkgType, mount);
         const config = BAZAAR_PACKAGE_CONFIG[pkgType];
         fetchPost(config.api.install, {
@@ -166,82 +186,137 @@ const ACTION_HANDLERS = {
             ...themeAppearanceMode,
             frontend: getFrontend()
         }, response => {
+            if (task.controller.signal.aborted) {
+                return;
+            }
             controller._onBazaar(response, pkgType, request);
             if (response.code !== 0) {
-                if (controller._isBazaarRequestCurrent(pkgType, request)) {
-                    controller._refreshReadmeDetail(pkgType, installItem.name);
-                }
                 return;
             }
             if (controller._isMountCurrent(mount)) {
                 controller._genMyHTML(pkgType, app, false);
-                controller._refreshReadmeDetail(pkgType, installItem.name);
             }
             if (pkgType === "plugins") {
                 if (window.siyuan.config.bazaar.petalDisabled) {
-                    confirmDialog(window.siyuan.languages.confirm, window.siyuan.languages.enablePluginTip2);
+                    confirmDialog({title: window.siyuan.languages.confirm, text: window.siyuan.languages.enablePluginTip2});
                 } else {
-                    confirmDialog("💡 " + window.siyuan.languages.enablePlugin, window.siyuan.languages.enablePluginTip, () => {
-                        controller._setPluginEnabled(app, installItem, true, () => {
-                            if (controller._isMountCurrent(mount)) {
-                                controller._genMyHTML(pkgType, app, false);
-                                controller._refreshReadmeDetail(pkgType, installItem.name);
-                            }
-                        });
+                    confirmDialog({
+                        title: "💡 " + window.siyuan.languages.enablePlugin,
+                        text: window.siyuan.languages.enablePluginTip,
+                        confirm: () => {
+                            controller._setPluginEnabled(app, installItem, true, () => {
+                                if (controller._isMountCurrent(mount)) {
+                                    controller._genMyHTML(pkgType, app, false);
+                                    controller._refreshReadmeDetail(pkgType, installItem.name);
+                                }
+                            });
+                        },
                     });
                 }
+            }
+        }, undefined, error => {
+            showMessage(error.msg);
+        }, task.controller.signal).finally(() => {
+            finishBazaarInstall(pkgType, installItem.name, task);
+            renderBazaarInstall(document);
+            if (controller._isMountCurrent(mount)) {
+                controller._refreshReadmeDetail(pkgType, installItem.name);
             }
         });
         return HANDLED;
     }) satisfies TBazaarActionHandler,
     "install-all": ((context) => {
         const {controller, mount} = context;
-        confirmDialog("⬆️ " + window.siyuan.languages.updateAll, window.siyuan.languages.confirmUpdateAll, () => {
-            fetchPost("/api/bazaar/batchUpdatePackage", {frontend: getFrontend()}, (response) => {
-                if (response.code !== 0) {
-                    showMessage(response.msg);
+        if (controller._batchUpdatePreferenceSaving) return HANDLED;
+        if (getBazaarBatchUpdate()) {
+            cancelBazaarBatchUpdate();
+            renderBazaarInstall(mount.element);
+            return HANDLED;
+        }
+        confirmDialog({
+            title: "⬆️ " + window.siyuan.languages.updateAll,
+            text: window.siyuan.languages.confirmUpdateAll,
+            confirm: () => {
+                if (controller._batchUpdatePreferenceSaving) return;
+                const batch = beginBazaarBatchUpdate(controller._getBatchUpdateItems());
+                if (!batch) {
                     return;
                 }
-                if (controller._isMountCurrent(mount)) {
-                    mount.element.querySelector("#configBazaarReadme")?.classList.remove("config__view--show");
-                    controller._checkUpdate(true);
-                }
-            });
+                renderBazaarInstall(mount.element);
+                fetchPost("/api/bazaar/batchUpdatePackage", {frontend: getFrontend()}, (response) => {
+                    if (batch.controller.signal.aborted) {
+                        return;
+                    }
+                    if (response.code !== 0) {
+                        showMessage(response.msg);
+                        return;
+                    }
+                    if (controller._isMountCurrent(mount)) {
+                        mount.element.querySelector("#configBazaarReadme")?.classList.remove("config__view--show");
+                    }
+                }, undefined, error => showMessage(error.msg), batch.controller.signal).finally(() => {
+                    finishBazaarBatchUpdate(batch);
+                    renderBazaarInstall(document);
+                    if (controller._isMountCurrent(mount)) {
+                        controller._checkUpdate(true);
+                    }
+                });
+            },
         });
         return HANDLED;
     }) satisfies TBazaarActionHandler,
     feedback: (() => HANDLED) satisfies TBazaarActionHandler,
     "install-t": ((context, target) => {
-        const {controller, app, mount, updatedItem, pkgItem, pkgType} = context;
+        const {controller, app, mount, updatedItem, pkgItem, availableItem, pkgType} = context;
         const packageName = updatedItem?.installed.name || pkgItem?.name;
+        if (packageName && pkgType && getBazaarInstallTask(pkgType, packageName)) {
+            cancelBazaarInstall(pkgType, packageName);
+            renderBazaarInstall(mount.element);
+            return HANDLED;
+        }
         if (!target.classList.contains("b3-button--progress") && !target.hasAttribute("disabled") &&
             packageName && pkgType) {
-            confirmDialog("⬆️ " + window.siyuan.languages.update, window.siyuan.languages.confirmUpdate, () => {
-                if (!target.classList.contains("b3-button")) {
-                    target.parentElement.insertAdjacentHTML("afterend", '<img data-type="img-loading" style="position: absolute;top: 0;left: 0;height: 100%;width: 100%;padding: 16px;box-sizing: border-box;" src="/stage/loading-pure.svg">');
-                }
-                const request = controller._beginBazaarRequest(pkgType, mount);
-                const config = BAZAAR_PACKAGE_CONFIG[pkgType];
-                const keyword = (mount.element.querySelector(
-                    `.config-bazaar__panel[data-type="${config.tabType}"] .b3-text-field`) as HTMLInputElement)?.value.trim() || "";
-                fetchPost("/api/bazaar/updateBazaarPackage", {
-                    packageType: pkgType,
-                    packageName,
-                    keyword,
-                    frontend: getFrontend()
-                }, response => {
-                    if (response.code !== 0) {
-                        showMessage(response.msg);
-                        target.parentElement.parentElement.querySelector("img[data-type='img-loading']")?.remove();
+            confirmDialog({
+                title: "⬆️ " + window.siyuan.languages.update,
+                text: window.siyuan.languages.confirmUpdate,
+                confirm: () => {
+                    const updateItem = availableItem || updatedItem?.available || pkgItem;
+                    const task = beginBazaarInstall(pkgType, packageName, updateItem.repoURL);
+                    if (!task) {
                         return;
                     }
-                    controller._onBazaar(response, pkgType, request);
-                    if (controller._isMountCurrent(mount)) {
-                        mount.element.querySelector("#configBazaarReadme")?.classList.remove("config__view--show");
-                        controller._genMyHTML(pkgType, app);
-                        controller._checkUpdate(true);
-                    }
-                });
+                    renderBazaarInstall(mount.element);
+                    const request = controller._beginBazaarRequest(pkgType, mount);
+                    const config = BAZAAR_PACKAGE_CONFIG[pkgType];
+                    const keyword = (mount.element.querySelector(
+                        `.config-bazaar__panel[data-type="${config.tabType}"] .b3-text-field`) as HTMLInputElement)?.value.trim() || "";
+                    fetchPost("/api/bazaar/updateBazaarPackage", {
+                        packageType: pkgType,
+                        packageName,
+                        keyword,
+                        frontend: getFrontend()
+                    }, response => {
+                        if (task.controller.signal.aborted) {
+                            return;
+                        }
+                        if (response.code !== 0) {
+                            showMessage(response.msg);
+                            return;
+                        }
+                        controller._onBazaar(response, pkgType, request);
+                        if (controller._isMountCurrent(mount)) {
+                            mount.element.querySelector("#configBazaarReadme")?.classList.remove("config__view--show");
+                            controller._genMyHTML(pkgType, app);
+                        }
+                    }, undefined, error => showMessage(error.msg), task.controller.signal).finally(() => {
+                        finishBazaarInstall(pkgType, packageName, task);
+                        renderBazaarInstall(document);
+                        if (controller._isMountCurrent(mount)) {
+                            controller._refreshReadmeDetail(pkgType, packageName);
+                            controller._checkUpdate(true);
+                        }
+                    });
+                },
             });
         }
         return HANDLED;
@@ -254,8 +329,10 @@ const ACTION_HANDLERS = {
         const uninstallName = installedItem.name;
         const config = BAZAAR_PACKAGE_CONFIG[pkgType];
         const keyword = (mount.element.querySelector(`.config-bazaar__panel[data-type="${config.tabType}"] .b3-text-field`) as HTMLInputElement).value;
-        confirmDialog("⚠️ " + window.siyuan.languages.uninstall,
-            window.siyuan.languages.confirmUninstall.replace("${name}", escapeHtml(uninstallName)), () => {
+        confirmDialog({
+            title: "⚠️ " + window.siyuan.languages.uninstall,
+            text: window.siyuan.languages.confirmUninstall.replace("${name}", escapeHtml(uninstallName)),
+            confirm: () => {
                 const request = controller._beginBazaarRequest(pkgType, mount);
                 fetchPost(config.api.uninstall, {
                     packageName: uninstallName,
@@ -274,7 +351,8 @@ const ACTION_HANDLERS = {
                         controller._checkUpdate(true);
                     }
                 });
-            });
+            },
+        });
         return HANDLED;
     }) satisfies TBazaarActionHandler,
     switch: ((context, target) => {
@@ -301,12 +379,12 @@ const ACTION_HANDLERS = {
             return CONTINUE;
         }
         if (!window.siyuan.config.bazaar.petalDisabled) {
-            app.plugins.find((item: Plugin) => {
-                if (item.name === pkgItem.name) {
-                    item.openSetting();
-                    return true;
-                }
-            });
+            const host = getSettingsWindowHost();
+            if (host) {
+                void host.openPluginSetting(pkgItem.name).catch(console.error);
+            } else {
+                app.plugins.find((item: Plugin) => item.name === pkgItem.name)?.openSetting();
+            }
         }
         return HANDLED;
     }) satisfies TBazaarActionHandler,
@@ -359,11 +437,13 @@ const ACTION_HANDLERS = {
         }
         if (!target.hasAttribute("disabled")) {
             target.setAttribute("disabled", "disabled");
-            const enabled = (target as HTMLInputElement).checked;
-            const pluginItem = installedItem || pkgItem;
+            const input = target as HTMLInputElement;
+            const enabled = input.checked;
+            const pluginItem = pkgItem || installedItem;
             controller._setPluginEnabled(app, pluginItem, enabled, () => {
                 if (controller._isMountCurrent(mount)) {
-                    target.removeAttribute("disabled");
+                    input.checked = Boolean(pluginItem.enabled);
+                    input.disabled = isBazaarPackageEnableDisabled("plugins", pluginItem);
                     controller._genMyHTML("plugins", app, true);
                 }
             });
@@ -451,10 +531,10 @@ const resolveClickContext = (
     };
 };
 
-const handleCardClick = (context: IBazaarClickContext, eventTarget: HTMLElement) => {
+const handleCardClick = (context: IBazaarClickContext) => {
     const {controller, pkgItem, pkgType, packageSource} = context;
-    if (!hasClosestByClassName(eventTarget, "b3-card__actions--right") && pkgItem && !pkgItem.invalidReason &&
-        pkgType && packageSource) {
+    // 操作区内的图标、按钮、开关、标签都带有 data-type 并在循环中先行处理，走到卡片这一层说明点击落在操作区的空白处
+    if (pkgItem && !pkgItem.invalidReason && pkgType && packageSource) {
         controller._renderReadme(pkgType, packageSource, pkgItem);
     }
     return HANDLED;
@@ -524,7 +604,7 @@ const bindBazaarClickEvent = (
             }
             let fallbackResult: IBazaarActionResult | undefined;
             if (target.classList.contains("b3-card")) {
-                fallbackResult = handleCardClick(context, eventTarget);
+                fallbackResult = handleCardClick(context);
             } else if (target.classList.contains("item") && !target.classList.contains("item--focus")) {
                 fallbackResult = handleLayoutTabClick(context, target);
             } else if (target.classList.contains("item__preview")) {
@@ -633,4 +713,5 @@ export const bindBazaarEvents = (
     bindBazaarClickEvent(controller, app, mount);
     bindBazaarSearchEvents(controller, app, mount);
     bindBazaarSelectEvents(controller);
+    bindBazaarFilterMenu(controller.element);
 };

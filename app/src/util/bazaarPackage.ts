@@ -1,3 +1,5 @@
+import {isBazaarPackageType} from "../config/bazaar/packageConfig";
+
 const reservedWindowsDeviceNames = new Set([
     "CON", "PRN", "AUX", "NUL",
     "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
@@ -15,7 +17,13 @@ type TBazaarDeprecationFields = {
     deprecated?: boolean;
     deprecatedReason?: Record<string, string>;
     preferredDeprecatedReason?: string;
-    alternatives?: string[];
+    choices?: IBazaarPackageChoice[];
+};
+
+// 已校验包类型的替代包，可直接用于打开对应类型的集市标签页
+export type TBazaarDeprecationChoice = {
+    packageType: TBazaarType;
+    name: string;
 };
 
 export const getBazaarDeprecationData = <T extends object>(
@@ -32,15 +40,28 @@ export const applyBazaarPackageDeprecation = <T extends TBazaarDeprecationFields
         delete installed.deprecated;
         delete installed.deprecatedReason;
         delete installed.preferredDeprecatedReason;
-        delete installed.alternatives;
+        delete installed.choices;
         return;
     }
     installed.deprecated = true;
     installed.deprecatedReason = available.deprecatedReason ? {...available.deprecatedReason} : {};
     installed.preferredDeprecatedReason = typeof available.preferredDeprecatedReason === "string" ?
         available.preferredDeprecatedReason : "";
-    installed.alternatives = Array.isArray(available.alternatives) ?
-        available.alternatives.filter((item): item is string => typeof item === "string") : [];
+    installed.choices = Array.isArray(available.choices) ?
+        available.choices.filter((item) => item && typeof item.name === "string").map((item) => ({
+            packageType: item.packageType, name: item.name,
+        })) : [];
+};
+
+// getBazaarDeprecationChoices 取弃用包的替代包，携带包类型，可跨类型跳转
+export const getBazaarDeprecationChoices = (item: {choices?: IBazaarPackageChoice[]}): TBazaarDeprecationChoice[] => {
+    const choices: TBazaarDeprecationChoice[] = [];
+    (Array.isArray(item.choices) ? item.choices : []).forEach((choice) => {
+        if (choice && isBazaarPackageType(choice.packageType) && typeof choice.name === "string" && choice.name.length > 0) {
+            choices.push({packageType: choice.packageType, name: choice.name});
+        }
+    });
+    return choices;
 };
 
 export const getBazaarCompatibilityFieldVisibility = (packageType: string) => {
@@ -335,12 +356,24 @@ export const sortBazaarPackagesByRating = <T extends {
 
 export const sortBazaarPackages = <T extends {
     updated: string;
+    created?: string;
     downloads: number;
     ratingAvailable?: boolean;
     rating?: IBazaarRating;
 }>(packages: T[], sortValue: string): T[] => {
     if (["4", "5"].includes(sortValue)) {
         return sortBazaarPackagesByRating(packages, sortValue === "4");
+    }
+    if (["6", "7"].includes(sortValue)) {
+        return packages.map((item, index) => ({item, index, created: Date.parse(item.created || "")})).sort((a, b) => {
+            const aKnown = Number.isFinite(a.created);
+            const bKnown = Number.isFinite(b.created);
+            if (aKnown !== bKnown) {
+                return aKnown ? -1 : 1;
+            }
+            const result = aKnown ? (sortValue === "6" ? b.created - a.created : a.created - b.created) : 0;
+            return result || a.index - b.index;
+        }).map(({item}) => item);
     }
     const indexed = packages.map((item, index) => ({item, index}));
     return indexed.sort((a, b) => {

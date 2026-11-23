@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package tools
 
@@ -31,9 +19,10 @@ import (
 const maxHTMLAssetContentSize = 2 * 1024 * 1024
 
 var AssetTool = &Tool{
-	Name:        "asset",
-	Description: "Asset management. Actions: upload(id, files=comma-separated absolute paths), create_html(id, html, name?, parentID?, previousID?, nextID?), unused(), clean(path?), stat(path). create_html writes an HTML asset and inserts a sandboxed IFrame block in one operation.",
-	EffectScope: EffectScopeLocal,
+	Name:           "asset",
+	Description:    "Document attachment management; use asset rather than file to write workspace assets. Actions: upload(id, files=comma-separated absolute paths), create_html(id, html, name?, parentID?, previousID?, nextID?), unused(), clean(path?), stat(path). create_html writes an HTML asset and inserts a sandboxed IFrame block in one operation. clean with a nonempty path removes that unused asset; omitting path or passing an empty path removes all unused assets. Use unused to inspect candidates and perform all-unused cleanup only when the user explicitly requests it.",
+	EffectScope:    EffectScopeLocal,
+	ResolveEffects: deferredAssetEffects(map[string]ToolEffects{"clean": {LocalWrite: true}}),
 	ActionEffects: map[string]ToolEffects{
 		"upload":      {LocalWrite: true},
 		"create_html": {LocalWrite: true},
@@ -53,7 +42,7 @@ var AssetTool = &Tool{
 			"parentID":   {Type: "string", Description: "Parent block ID (for create_html, defaults to the document ID)"},
 			"previousID": {Type: "string", Description: "Previous sibling block ID (for create_html)"},
 			"nextID":     {Type: "string", Description: "Next sibling block ID (for create_html)"},
-			"path":       {Type: "string", Description: "Single unused asset path to remove, relative to data directory (for clean, optional). Use as returned by the unused action, e.g. assets/image/xxx.png."},
+			"path":       {Type: "string", Description: "Asset path relative to data directory (for stat, or a single unused asset for clean). Use as returned by unused, e.g. assets/image/xxx.png. For clean, an omitted or empty path removes all unused assets; use only for explicitly requested all-unused cleanup"},
 		},
 		Required: []string{"action"},
 	},
@@ -151,7 +140,7 @@ func assetCreateHTML(args map[string]any) (CallToolResult, error) {
 		}},
 	}}
 	model.PerformTransactions(&transactions)
-	model.FlushTxQueue()
+	model.WaitForTransactions(transactions)
 	util.PushReloadProtyle(docBlockTree.RootID)
 
 	return CallToolResult{
@@ -194,14 +183,14 @@ func htmlAssetIFrameBlockDOM(assetPath string) (dom, blockID string, err error) 
 
 func newAssetUploadToolResult(succeeded []model.AssetUploadSuccess, failed []model.AssetUploadFailure) CallToolResult {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Uploaded %d file(s):\n", len(succeeded)))
+	fmt.Fprintf(&sb, "Uploaded %d file(s):\n", len(succeeded))
 	for _, result := range succeeded {
-		sb.WriteString(fmt.Sprintf("- %s -> %s\n", result.Name, result.Path))
+		fmt.Fprintf(&sb, "- %s -> %s\n", result.Name, result.Path)
 	}
 	if 0 < len(failed) {
-		sb.WriteString(fmt.Sprintf("\nFailed %d file(s):\n", len(failed)))
+		fmt.Fprintf(&sb, "\nFailed %d file(s):\n", len(failed))
 		for _, result := range failed {
-			sb.WriteString(fmt.Sprintf("- %s: %s\n", result.Name, result.Error))
+			fmt.Fprintf(&sb, "- %s: %s\n", result.Name, result.Error)
 		}
 	}
 	return CallToolResult{Content: []ContentItem{{Type: "text", Text: sb.String()}}, IsError: 0 < len(failed)}
@@ -246,7 +235,7 @@ func validateAssetUploadPaths(fileList []string) ([]string, error) {
 	return fileList, nil
 }
 
-func assetUnused(args map[string]any) (CallToolResult, error) {
+func assetUnused(_ map[string]any) (CallToolResult, error) {
 	items, err := model.UnusedAssets(true)
 	if err != nil {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: err.Error()}}, IsError: true}, nil
@@ -255,9 +244,9 @@ func assetUnused(args map[string]any) (CallToolResult, error) {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "no unused assets found"}}}, nil
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Unused assets (%d):\n\n", len(items)))
+	fmt.Fprintf(&sb, "Unused assets (%d):\n\n", len(items))
 	for _, item := range items {
-		sb.WriteString(fmt.Sprintf("- %s (%s)\n", item.Item, item.Name))
+		fmt.Fprintf(&sb, "- %s (%s)\n", item.Item, item.Name)
 	}
 	return CallToolResult{Content: []ContentItem{{Type: "text", Text: sb.String()}}}, nil
 }
@@ -283,9 +272,9 @@ func assetClean(args map[string]any) (CallToolResult, error) {
 		return CallToolResult{Content: []ContentItem{{Type: "text", Text: "no unused assets to clean"}}}, nil
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Removed %d asset(s):\n\n", len(removed)))
+	fmt.Fprintf(&sb, "Removed %d asset(s):\n\n", len(removed))
 	for _, p := range removed {
-		sb.WriteString(fmt.Sprintf("- %s\n", p))
+		fmt.Fprintf(&sb, "- %s\n", p)
 	}
 	return CallToolResult{Content: []ContentItem{{Type: "text", Text: sb.String()}}}, nil
 }

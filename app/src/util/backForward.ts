@@ -1,7 +1,8 @@
 import type {FileTreeGetDocRequestInput} from "../types/api";
 import {hasClosestBlock, isInEmbedBlock} from "../protyle/util/hasClosest";
 import {getContenteditableElement} from "../protyle/wysiwyg/getBlock";
-import {focusByOffset, focusByRange, getSelectionOffset} from "../protyle/util/selection";
+import {focusByOffset} from "../protyle/util/selection";
+import {focusByRange, getSelectionOffset} from "../protyle/util/selectionOffsets";
 import {hideElements} from "../protyle/ui/hideElements";
 import {fetchPost, fetchSyncPost} from "./fetch";
 import {Constants} from "../constants";
@@ -229,12 +230,16 @@ const focusStack = async (app: App, stack: IBackStack) => {
         // 即使块存在，折叠的情况需要也需要 zoomOut，否则折叠块内的光标无法定位
         currentZoomId === stack.zoomId
     ) {
+        const activeElement = document.activeElement as HTMLElement;
+        // 平板仅在当前正文仍处于编辑状态时恢复光标，阅读和其他页签不主动唤起键盘。
+        const isEditing = blockElement.getBoundingClientRect().height > 0 &&
+            activeElement?.isContentEditable && stack.protyle.wysiwyg.element.contains(activeElement);
         if (blockElement.getBoundingClientRect().height === 0) {
             // 切换 tab
             stack.protyle.model.parent.parent.switchTab(stack.protyle.model.parent.headElement,
                 false, true, true, true, false);
         }
-        if (!stack.protyle.disabled && !isPhablet()) {
+        if (!stack.protyle.disabled && (!isPhablet() || isEditing)) {
             focusHistoryBlock(blockElement, stack.position);
         }
         scrollCenter(stack.protyle, blockElement, "start");
@@ -323,6 +328,13 @@ const focusStack = async (app: App, stack: IBackStack) => {
         });
         return true;
     }
+};
+
+export const hasBackHistory = () => {
+    const stacks = window.siyuan.backStack;
+    const last = stacks[stacks.length - 1];
+    // 后退后当前记录位于前进栈；未后退时，已关闭的当前页签也可作为返回目标。
+    return Boolean(last && (previousIsBack || stacks.length > 1 || !document.contains(last.protyle.element)));
 };
 
 export const goBack = async (app: App) => {

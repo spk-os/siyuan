@@ -1,7 +1,8 @@
 import {fetchSyncPost} from "../../util/fetch";
 import {markToolbarHotkey} from "./hotkey";
 import {Constants} from "../../constants";
-import {focusByRange, focusByWbr} from "../util/selection";
+import {focusByWbr} from "../util/selection";
+import {focusByRange} from "../util/selectionOffsets";
 import {isDisabledFeature, writeText} from "../util/compatibility";
 import {isArrayEqual} from "../../util/functions";
 import {hasSameTextStyle} from "./Font";
@@ -17,10 +18,15 @@ import {
 import {normalizeHTMLAssetIFrameBlockDOM} from "../../asset/html";
 import {destroyTabsRender, tabsRender} from "../render/tabsRender";
 import {genTemplateDocTreePlanHTML} from "../../template/docTree";
+import {getTemplateHTTPWindow, guardTemplateHTTPRequest, revokeTemplateHTTPConfirmation} from "../../template/http";
+import {clearTemplateHTTPConfirmation, clearTemplateHTTPConfirmations, retainTemplateHTTPConfirmation, templateHTTPConfirmEpoch} from "../../template/httpConfirmHandoff";
 
-const templatePreviewRequests = new WeakMap<Element, object>();
+const templatePreviewRequests = new WeakMap<Element, ReturnType<typeof guardTemplateHTTPRequest>>();
 
 export const clearTemplatePreview = (element: Element) => {
+    clearTemplateHTTPConfirmation(element);
+    templatePreviewRequests.get(element)?.cancel();
+    templatePreviewRequests.get(element)?.dispose();
     templatePreviewRequests.delete(element);
     if (element.firstElementChild) {
         destroyTabsRender(element.firstElementChild);
@@ -33,17 +39,25 @@ export const previewTemplate = (pathString: string, element: Element, parentId: 
         clearTemplatePreview(element);
         return;
     }
-    const request = {};
+    templatePreviewRequests.get(element)?.cancel();
+    templatePreviewRequests.get(element)?.dispose();
+    clearTemplateHTTPConfirmations();
+    const confirmationEpoch = templateHTTPConfirmEpoch();
+    const confirmationOwner = getTemplateHTTPWindow();
+    const request = guardTemplateHTTPRequest(() => element.isConnected && !element.closest(".fn__none"));
     templatePreviewRequests.set(element, request);
-    fetchSyncPost("/api/template/render", {
+    return fetchSyncPost("/api/template/render", {
         id: parentId,
         path: pathString,
         mode: "preview",
         preview: true,
         ...(source === undefined ? {} : {content: source})
-    }).then((response) => {
+    }, undefined, true, request.signal).then((response) => {
         // 切换模板或关闭预览后，忽略先前请求的返回结果。
         if (templatePreviewRequests.get(element) !== request || !element.isConnected) {
+            if (response.code === 0) {
+                revokeTemplateHTTPConfirmation(response.data?.httpConfirmToken, confirmationOwner);
+            }
             return;
         }
         clearTemplatePreview(element);
@@ -57,11 +71,15 @@ export const previewTemplate = (pathString: string, element: Element, parentId: 
                 window.siyuan.languages.newSubDoc));
         }
         tabsRender(element.firstElementChild, {label: window.siyuan.languages.tabItem});
+        if (confirmationOwner) {
+            retainTemplateHTTPConfirmation(element, pathString, parentId, response.data.httpConfirmToken,
+                confirmationEpoch, () => revokeTemplateHTTPConfirmation(response.data.httpConfirmToken, confirmationOwner));
+        }
     }).catch(() => {
         if (templatePreviewRequests.get(element) === request) {
             clearTemplatePreview(element);
         }
-    });
+    }).finally(request.dispose);
 };
 
 const mergeElement = (a: Element, b: Element, after = true) => {
@@ -195,6 +213,11 @@ export const removeInlineType = (inlineElement: HTMLElement, type: string, range
 
 export const toolbarKeyToMenu = (toolbar: Array<string | IMenuItem>) => {
     const toolbarItem: IMenuItem [] = [{
+        name: "block-type",
+        lang: "turnInto",
+        icon: "iconParagraph",
+        tipPosition: "n",
+    }, {
         name: "block-ref",
         hotkey: window.siyuan.config.keymap.editor.insert.ref.custom,
         lang: "ref",
@@ -216,7 +239,7 @@ export const toolbarKeyToMenu = (toolbar: Array<string | IMenuItem>) => {
             const editor = protyle.protyle;
             const range = editor.toolbar.range?.cloneRange();
             if (range && !range.collapsed) {
-                AIActions([], editor, range);
+                AIActions([], editor, range, editor.toolbar.element.querySelector('[data-type="ai"]'));
             }
         },
     }, {

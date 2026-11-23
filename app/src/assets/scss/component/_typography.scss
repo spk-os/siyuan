@@ -1,10 +1,6 @@
 @use "../util/function";
 @use "../protyle/task";
 
-:root {
-  --b3-font-family-emoji-reset: "Emojis Additional", "Emojis Reset";
-}
-
 @font-face {
   font-family: 'JetBrainsMono-Regular';
   /*! /* webpackIgnore: true */
@@ -25,6 +21,11 @@
   &.mindmap-view__content {
     // 富文本预览沿用所在单元格或脑图节点的字号。
     font-size: inherit;
+  }
+
+  &.table__cell-rich {
+    // 富文本预览沿用所在单元格的字体。
+    font-family: inherit;
   }
 
   img {
@@ -87,7 +88,7 @@
 
   span[data-type~="inline-math"] {
     direction: ltr;
-    user-select: text;
+    user-select: all;
     display: inline;
     // https://github.com/siyuan-note/siyuan/issues/17211
     &:after {
@@ -190,6 +191,13 @@
 
     .callout-info {
       color: var(--b3-callout-note);
+    }
+
+    > .callout-info > .callout-title {
+      mark,
+      span[data-type~="mark"] {
+        color: inherit;
+      }
     }
 
     .callout-icon {
@@ -365,6 +373,11 @@
     border-spacing: 0;
     width: max-content;
 
+    tr {
+      // 交错跨行合并时，每个逻辑行仍需独立的高度支撑。
+      height: calc(1.625em + 9px);
+    }
+
     thead > tr:first-child > :first-child {
       border-top-left-radius: var(--b3-table-border-radius-top-left);
     }
@@ -373,13 +386,19 @@
       border-top-right-radius: var(--b3-table-border-radius-top-right);
     }
 
-    tbody:last-of-type > tr:last-child > :first-child,
-    thead:last-child > tr:last-child > :first-child {
+    &:not([data-table-corners]) > tbody:last-of-type > tr:last-child > :first-child,
+    &:not([data-table-corners]) > thead:last-child > tr:last-child > :first-child,
+    > thead > tr > [data-table-cell-corner~="bottom-left"],
+    > tbody > tr > [data-table-cell-corner~="bottom-left"],
+    > tfoot > tr > [data-table-cell-corner~="bottom-left"] {
       border-bottom-left-radius: var(--b3-table-border-radius-bottom-left);
     }
 
-    tbody:last-of-type > tr:last-child > :nth-last-child(1 of :not(.fn__none)),
-    thead:last-child > tr:last-child > :nth-last-child(1 of :not(.fn__none)) {
+    &:not([data-table-corners]) > tbody:last-of-type > tr:last-child > :nth-last-child(1 of :not(.fn__none)),
+    &:not([data-table-corners]) > thead:last-child > tr:last-child > :nth-last-child(1 of :not(.fn__none)),
+    > thead > tr > [data-table-cell-corner~="bottom-right"],
+    > tbody > tr > [data-table-cell-corner~="bottom-right"],
+    > tfoot > tr > [data-table-cell-corner~="bottom-right"] {
       border-bottom-right-radius: var(--b3-table-border-radius-bottom-right);
     }
 
@@ -568,7 +587,7 @@
         flex: 1;
       }
 
-      & > .tag {
+      & > .katex-tag {
         position: initial;
         margin-right: 2px;
         margin-left: 8px;
@@ -612,6 +631,21 @@
     text-align: center;
   }
 
+  [data-subtype="mermaid"] {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+
+    &[style*="text-align: center"] {
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    &[style*="text-align: right"] {
+      margin-left: auto;
+    }
+  }
+
   [data-type="NodeIFrame"] {
     height: 256px;
   }
@@ -620,6 +654,7 @@
   [data-type="NodeWidget"] {
     width: 100%;
     max-width: 100%;
+    box-sizing: border-box;
 
     .iframe-content {
       position: relative;
@@ -635,6 +670,7 @@
       max-width: 100%;
       min-height: 100%;
       max-height: 100%;
+      vertical-align: bottom;
     }
   }
 
@@ -685,7 +721,8 @@
       }
     }
 
-    .protyle-action__title {
+    .protyle-action__title,
+    .img__alt {
       display: flex;
       font-size: 85%;
       color: var(--b3-theme-on-surface);
@@ -743,6 +780,22 @@
   ol {
     padding: revert-layer;
     margin: 4px 0;
+
+    &[data-auto-direction="list"] {
+      padding-left: 0;
+      padding-right: 0;
+
+      & > li {
+        margin-left: 2em;
+        margin-right: 0;
+      }
+
+      & > li[data-auto-list-direction="rtl"],
+      & > li[dir="rtl"] {
+        margin-left: 0;
+        margin-right: 2em;
+      }
+    }
   }
 
   hr {
@@ -777,6 +830,16 @@
   .protyle-icons {
     display: none;
   }
+}
+
+.b3-list-item__text.document-title-preview span {
+  user-select: none;
+}
+
+// 标题预览默认继承所在界面的字号，单类主题或片段规则可直接覆盖。
+:where(.b3-typography).outline-document-title,
+:where(.b3-typography).document-title-preview {
+  font-size: inherit;
 }
 
 .protyle {

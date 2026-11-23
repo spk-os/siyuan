@@ -1,18 +1,6 @@
-// SiYuan - From thought to insight, with agents
+// SiYuan - https://github.com/siyuan-note/siyuan
 // Copyright (c) 2020-present, b3log.org
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 
 package model
 
@@ -77,9 +65,9 @@ func GetDocInfoInBox(blockID, boxID string) (ret *BlockInfo, err error) {
 
 func getDocInfoByTree(blockID string, tree *parse.Tree) (ret *BlockInfo) {
 	boxID := tree.Box
-	title := tree.Root.IALAttr("title")
+	title := treenode.ReadDocumentTitle(tree.Root).Text
 	ret = &BlockInfo{ID: blockID, RootID: tree.Root.ID, Name: title}
-	ret.IAL = parse.IAL2Map(tree.Root.KramdownIAL)
+	ret.IAL = filterHandlerIALAttrs(parse.IAL2Map(tree.Root.KramdownIAL))
 	scrollData := ret.IAL["scroll"]
 	if 0 < len(scrollData) {
 		// scroll 属性值在持久化时会被 html.EscapeAttrVal() 进行 HTML 转义（如 " 变为 &quot;），
@@ -195,9 +183,9 @@ func GetDocsInfo(blockIDs []string, queryRefCount bool, queryAv bool) (rets []*B
 		if nil == tree {
 			continue
 		}
-		title := tree.Root.IALAttr("title")
+		title := treenode.ReadDocumentTitle(tree.Root).Text
 		ret := &BlockInfo{ID: blockID, RootID: tree.Root.ID, Name: title}
-		ret.IAL = parse.IAL2Map(tree.Root.KramdownIAL)
+		ret.IAL = filterHandlerIALAttrs(parse.IAL2Map(tree.Root.KramdownIAL))
 		scrollData := ret.IAL["scroll"]
 		if 0 < len(scrollData) {
 			// scroll 属性值在持久化时会被 html.EscapeAttrVal() 进行 HTML 转义（如 " 变为 &quot;），
@@ -307,18 +295,6 @@ func GetBlockRefText(id string) string {
 		return ErrBlockNotFound.Error()
 	}
 
-	ast.Walk(node, func(n *ast.Node, entering bool) ast.WalkStatus {
-		if !entering {
-			return ast.WalkContinue
-		}
-
-		if n.IsTextMarkType("inline-memo") {
-			// Block ref anchor text no longer contains contents of inline-level memos https://github.com/siyuan-note/siyuan/issues/9363
-			n.TextMarkInlineMemoContent = ""
-			return ast.WalkContinue
-		}
-		return ast.WalkContinue
-	})
 	return getNodeRefText(node)
 }
 
@@ -329,6 +305,14 @@ func GetDOMText(dom string) (ret string) {
 	return
 }
 
+// GetDOMTextWithoutOCRAssets 供发布读者使用，不返回资源的 OCR 文本，避免读取未发布资源的 OCR 缓存。
+func GetDOMTextWithoutOCRAssets(dom string) (ret string) {
+	luteEngine := NewLute()
+	tree := luteEngine.BlockDOM2Tree(dom)
+	ret = renderBlockTextWithoutOCRAssets(tree.Root.FirstChild, nil, true)
+	return
+}
+
 func getBlockRefText(id string, tree *parse.Tree) (ret string) {
 	node := treenode.GetNodeInTree(tree, id)
 	if nil == node {
@@ -336,7 +320,7 @@ func getBlockRefText(id string, tree *parse.Tree) (ret string) {
 	}
 
 	ret = getNodeRefText(node)
-	ret = maxContent(ret, Conf.Editor.BlockRefDynamicAnchorTextMaxLen)
+	ret = maxContent(ret, Conf.Editor.Load().BlockRefDynamicAnchorTextMaxLen)
 	return
 }
 
@@ -350,7 +334,7 @@ func getNodeRefText(node *ast.Node) string {
 		ret = util.EscapeHTML(ret)
 		return ret
 	}
-	return getNodeRefText0(node, Conf.Editor.BlockRefDynamicAnchorTextMaxLen, true)
+	return getNodeRefText0(node, Conf.Editor.Load().BlockRefDynamicAnchorTextMaxLen, true)
 }
 
 func getNodeAvBlockText(node *ast.Node, avID string) (icon, content string) {
@@ -394,6 +378,34 @@ func getNodeAvBlockRefSubtype(node *ast.Node, avID string) av.BlockRefSubtype {
 	return av.BlockRefSubtypeDynamic
 }
 
+// stripInlineMemoContent 返回去掉行级备注文本的节点副本，没有备注时返回原节点。
+func stripInlineMemoContent(node *ast.Node) *ast.Node {
+	if nil == node {
+		return nil
+	}
+
+	hasMemo := false
+	ast.Walk(node, func(n *ast.Node, entering bool) ast.WalkStatus {
+		if entering && n.IsTextMarkType("inline-memo") && "" != n.TextMarkInlineMemoContent {
+			hasMemo = true
+			return ast.WalkStop
+		}
+		return ast.WalkContinue
+	})
+	if !hasMemo {
+		return node
+	}
+
+	clone := cloneRenderNode(node)
+	ast.Walk(clone, func(n *ast.Node, entering bool) ast.WalkStatus {
+		if entering && n.IsTextMarkType("inline-memo") {
+			n.TextMarkInlineMemoContent = ""
+		}
+		return ast.WalkContinue
+	})
+	return clone
+}
+
 func getNodeRefText0(node *ast.Node, maxLen int, removeLineBreak bool) string {
 	switch node.Type {
 	case ast.NodeBlockQueryEmbed:
@@ -408,11 +420,7 @@ func getNodeRefText0(node *ast.Node, maxLen int, removeLineBreak bool) string {
 		return "Audio..."
 	case ast.NodeTabItem:
 		if title := treenode.TabTitleParagraph(node); nil != title {
-			ret := renderBlockText(title, nil, removeLineBreak)
-			if maxLen < utf8.RuneCountInString(ret) {
-				ret = gulu.Str.SubStr(ret, maxLen) + "..."
-			}
-			return ret
+			return getNodeRefText0(title, maxLen, removeLineBreak)
 		}
 	case ast.NodeAttributeView:
 		ret, _ := av.GetAttributeViewName(node.AttributeViewID)
@@ -425,6 +433,10 @@ func getNodeRefText0(node *ast.Node, maxLen int, removeLineBreak bool) string {
 	if ast.NodeDocument != node.Type && node.IsContainerBlock() {
 		node = treenode.FirstLeafBlock(node)
 	}
+	if nil != node && ast.NodeDocument != node.Type {
+		// 锚文本只保留可见文字，在副本上过滤备注以保留源块内容。
+		node = stripInlineMemoContent(node)
+	}
 	ret := renderBlockText(node, nil, removeLineBreak)
 	if maxLen < utf8.RuneCountInString(ret) {
 		ret = gulu.Str.SubStr(ret, maxLen) + "..."
@@ -435,10 +447,6 @@ func getNodeRefText0(node *ast.Node, maxLen int, removeLineBreak bool) string {
 type RefDefs struct {
 	RefID  string   `json:"refID"`
 	DefIDs []string `json:"defIDs"`
-}
-
-func GetBlockRefs(defID string) (refDefs []*RefDefs, originalRefBlockIDs map[string]string) {
-	return GetBlockRefsInBox(defID, "")
 }
 
 // GetBlockRefsInBox 获取指定笔记本内的块引用关系。空 box 不回退搜索加密笔记本。
@@ -489,16 +497,8 @@ func queryBlockRefDefsInBox(bt *treenode.BlockTree, boxID string) (refDefs []*Re
 	return
 }
 
-func GetBlockRefIDsByFileAnnotationID(id string) []string {
-	return sql.QueryRefIDsByAnnotationID(id)
-}
-
 func GetBlockRefIDsByFileAnnotationIDInBox(id, boxID string) []string {
 	return sql.QueryRefIDsByAnnotationIDInBox(id, boxID)
-}
-
-func GetBlockDefIDsByRefText(refText string) (ret []string) {
-	return GetBlockDefIDsByRefTextInBox(refText, "")
 }
 
 func GetBlockDefIDsByRefTextInBox(refText, boxID string) (ret []string) {
@@ -615,12 +615,13 @@ func getDocBlocksOrdersInTree(tree *parse.Tree) (ret []string) {
 }
 
 type BlockPath struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Type        string       `json:"type"`
-	SubType     string       `json:"subType"`
-	Children    []*BlockPath `json:"children"`
-	HasChildren bool         `json:"hasChildren,omitempty"`
+	ID            string       `json:"id"`
+	Name          string       `json:"name"`
+	DocumentTitle string       `json:"documentTitle,omitempty"`
+	Type          string       `json:"type"`
+	SubType       string       `json:"subType"`
+	Children      []*BlockPath `json:"children"`
+	HasChildren   bool         `json:"hasChildren,omitempty"`
 }
 
 type BlockBreadcrumbChildren struct {
@@ -647,10 +648,6 @@ func BuildBlockBreadcrumbInBox(id string, excludeTypes []string, boxID string) (
 
 	ret = buildBlockBreadcrumb(node, excludeTypes, false)
 	return
-}
-
-func GetBlockBreadcrumbChildren(id string, excludeTypes []string, offset, limit int) (ret *BlockBreadcrumbChildren, err error) {
-	return GetBlockBreadcrumbChildrenInBox(id, excludeTypes, offset, limit, "")
 }
 
 func GetBlockBreadcrumbChildrenInBox(id string, excludeTypes []string, offset, limit int, boxID string) (
@@ -764,7 +761,7 @@ func hasBlockBreadcrumbChildren(node *ast.Node) (ret bool) {
 
 func buildBlockBreadcrumbChild(node *ast.Node, excludeTypes []string) (ret *BlockPath) {
 	maxNameLen := 1024
-	fc := treenode.FirstLeafBlock(node)
+	fc := stripInlineMemoContent(treenode.FirstLeafBlock(node))
 	name := node.IALAttr("name")
 	if ast.NodeAttributeView == node.Type {
 		name, _ = av.GetAttributeViewName(node.AttributeViewID)
@@ -775,7 +772,7 @@ func buildBlockBreadcrumbChild(node *ast.Node, excludeTypes []string) (ret *Bloc
 			ast.NodeBlockquote == node.Type || ast.NodeCallout == node.Type {
 			name = gulu.Str.SubStr(renderBlockText(fc, excludeTypes, true), maxNameLen)
 		} else {
-			name = gulu.Str.SubStr(renderBlockText(node, excludeTypes, true), maxNameLen)
+			name = gulu.Str.SubStr(renderBlockText(stripInlineMemoContent(node), excludeTypes, true), maxNameLen)
 		}
 	}
 	if ast.NodeListItem == node.Type && "" == name {
@@ -821,7 +818,7 @@ func buildBlockBreadcrumb(node *ast.Node, excludeTypes []string, isEmbedBlock bo
 			continue
 		}
 		id := parent.ID
-		fc := treenode.FirstLeafBlock(parent)
+		fc := stripInlineMemoContent(treenode.FirstLeafBlock(parent))
 
 		name := parent.IALAttr("name")
 		if ast.NodeDocument == parent.Type {
@@ -839,7 +836,7 @@ func buildBlockBreadcrumb(node *ast.Node, excludeTypes []string, isEmbedBlock bo
 				if ast.NodeListItem == parent.Type || ast.NodeList == parent.Type || ast.NodeMindmapItem == parent.Type || ast.NodeMindmap == parent.Type || ast.NodeSuperBlock == parent.Type || ast.NodeBlockquote == parent.Type || ast.NodeCallout == parent.Type {
 					name = gulu.Str.SubStr(renderBlockText(fc, excludeTypes, true), maxNameLen)
 				} else {
-					name = gulu.Str.SubStr(renderBlockText(parent, excludeTypes, true), maxNameLen)
+					name = gulu.Str.SubStr(renderBlockText(stripInlineMemoContent(parent), excludeTypes, true), maxNameLen)
 				}
 			}
 			if ast.NodeHeading == parent.Type {
@@ -885,11 +882,16 @@ func buildBlockBreadcrumb(node *ast.Node, excludeTypes []string, isEmbedBlock bo
 		}
 
 		if add {
+			documentTitle := ""
+			if isEmbedBlock && ast.NodeDocument == parent.Type {
+				documentTitle = util.EscapeHTML(strings.ReplaceAll(treenode.ReadDocumentTitle(parent).Text, editor.Caret, ""))
+			}
 			ret = append([]*BlockPath{{
-				ID:      id,
-				Name:    name,
-				Type:    parent.Type.String(),
-				SubType: treenode.SubTypeAbbr(parent),
+				ID:            id,
+				Name:          name,
+				DocumentTitle: documentTitle,
+				Type:          parent.Type.String(),
+				SubType:       treenode.SubTypeAbbr(parent),
 			}}, ret...)
 		}
 
@@ -916,7 +918,7 @@ func buildBlockBreadcrumb(node *ast.Node, excludeTypes []string, isEmbedBlock bo
 					continue
 				}
 
-				name = gulu.Str.SubStr(renderBlockText(b, excludeTypes, true), maxNameLen)
+				name = gulu.Str.SubStr(renderBlockText(stripInlineMemoContent(b), excludeTypes, true), maxNameLen)
 				name = util.UnescapeHTML(name)
 				name = util.EscapeHTML(name)
 				ret = append([]*BlockPath{{
